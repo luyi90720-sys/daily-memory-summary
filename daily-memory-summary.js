@@ -1,5 +1,5 @@
 /*
- * 每日记忆总结 (daily-memory-summary) v1.1.0
+ * 每日记忆总结 (daily-memory-summary) v1.2.0
  * 按天分割会话短期记忆，导入人设与世界书，自定义思维链与格式生成每日总结。
  * 风格：深色梦幻星河 + 毛玻璃，无廉价 emoji。
  */
@@ -328,7 +328,7 @@
       "  --dms-accent:#9D7BFF;--dms-accent2:#5BD0FF;--dms-accent3:#FF8AD8;",
       "  --dms-warn:#FFC36A;--dms-ok:#7CE0B0;",
       "  --dms-radius:16px;--dms-radius-sm:10px;",
-      "  position:relative;width:100%;min-height:100%;color:var(--dms-text);",
+      "  position:relative;width:100%;height:100%;display:flex;flex-direction:column;overflow:hidden;color:var(--dms-text);",
       "  font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif;",
       "  background:",
       "    radial-gradient(1200px 700px at 15% -10%,rgba(157,123,255,0.30),transparent 60%),",
@@ -339,7 +339,7 @@
       "}",
       "." + ROOT_CLASS + " *{box-sizing:border-box;margin:0;padding:0;}",
       "." + ROOT_CLASS + " .dms-top{",
-      "  position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;",
+      "  flex-shrink:0;position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:10px;",
       "  padding:12px 16px;",
       "  background:linear-gradient(180deg,rgba(15,11,42,0.92),rgba(15,11,42,0.35));",
       "  backdrop-filter:blur(18px) saturate(1.4);border-bottom:1px solid var(--dms-border);",
@@ -369,7 +369,8 @@
       "  background:linear-gradient(135deg,rgba(157,123,255,0.85),rgba(91,208,255,0.65));",
       "  border-color:transparent;color:#0b0822;font-weight:600;}",
       "." + ROOT_CLASS + " .dms-btn-primary:hover{filter:brightness(1.1);}",
-      "." + ROOT_CLASS + " .dms-wrap{padding:16px;max-width:860px;margin:0 auto;padding-bottom:100px;}",
+      "." + ROOT_CLASS + " .dms-body{flex:1;overflow-y:auto;position:relative;z-index:1;-webkit-overflow-scrolling:touch;}",
+      "." + ROOT_CLASS + " .dms-wrap{padding:16px;max-width:860px;margin:0 auto;}",
       "." + ROOT_CLASS + " .dms-card{",
       "  background:var(--dms-glass);border:1px solid var(--dms-border);",
       "  border-radius:var(--dms-radius);padding:16px;margin-bottom:14px;",
@@ -440,7 +441,7 @@
       "  font-size:11px;padding:8px 12px;border-radius:8px;margin-top:10px;",
       "  background:rgba(255,195,106,0.10);border:1px solid rgba(255,195,106,0.3);color:var(--dms-warn);}",
       "." + ROOT_CLASS + " .dms-footer{",
-      "  position:fixed;left:0;right:0;bottom:0;z-index:30;",
+      "  flex-shrink:0;z-index:30;",
       "  padding:10px 16px calc(10px + env(safe-area-inset-bottom));",
       "  background:linear-gradient(0deg,rgba(10,7,32,0.95),rgba(10,7,32,0.6));",
       "  backdrop-filter:blur(20px);border-top:1px solid var(--dms-border);",
@@ -877,7 +878,7 @@
     // ---- 组装 DOM（不清空已有 style） ----
     // root 里已有 class，直接追加子元素
     root.appendChild(buildTop());
-    var body = el("div", { class: "dms-body", style: { position: "relative", zIndex: "1" } });
+    var body = el("div", { class: "dms-body" });
     root.appendChild(body);
     body.appendChild(el("div", { class: "dms-wrap" }, [el("div", { class: "dms-empty" }, ["\u52a0\u8f7d\u4e2d\u2026"])]));
     root.appendChild(buildFooter());
@@ -908,7 +909,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u6bcf\u65e5\u8bb0\u5fc6\u603b\u7ed3",
-    version: "1.1.0",
+    version: "1.2.0",
     apps: [
       {
         id: "daily-memory-summary-home",

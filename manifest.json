@@ -1,0 +1,19 @@
+{
+    "version":  "1.0.0",
+    "entry":  "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
+    "id":  "daily-memory-summary",
+    "name":  "每日记忆总结",
+    "permissions":  [
+                        "persona:read",
+                        "character:read",
+                        "memory:read",
+                        "memory:write",
+                        "worldbook:read",
+                        "ai:chat",
+                        "storage",
+                        "ui"
+                    ],
+    "description":  "按天分割会话短期记忆，导入人设与世界书，自定义思维链与格式生成每日总结，可选同步到事实记忆。",
+    "author":  "Roche Plugin",
+    "hash":  ""
+}

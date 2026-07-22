@@ -1,7 +1,8 @@
 /*
- * 手账日记 (daily-memory-summary) v2.0.0
- * 手账本风格的每日日记 — char与user交换日记，互相批注涂鸦。
+ * 手账日记 (daily-memory-summary) v2.1.0
+ * 手账本风格的每日日记 — char写日记，user手写日记，互相批注涂鸦。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
+ * v2.1.0: 删除AI代写user日记、修复生成状态提示、修复翻页失败可重试、修复选会话不重建、添加事实记忆条数选择
  */
 (function () {
   "use strict";
@@ -23,7 +24,7 @@
       "",
       "1. 第一人称与口吻",
       "   - 完全使用“我”来叙述，仿佛 {{char}} 在亲自回忆、写日记、对自己嘟囔，或向某个无比信任的人倾诉。",
-      "   - 语气、用词、句式和思考回路必须100%贴合 {{char}} 的人设。允许甚至鼓励口语化，包括口癖、倒装、碎碎念、突然的情绪爆发或欲言又止，怎么真就怎么来。",
+      "   - 语气、用词、句式和思考回路必须100%贴合 {{char}} 的人设。允许甚至鼓励口语化，包括口癖、倒装、碎碎念、突然的情绪爆发或欲言欲止，怎么真就怎么来。",
       "",
       "2. 剧情时间（非现实时间）",
       "   - 在记录的开头或合适的显眼位置，务必写明当前所处的【时间】。写明这是谁的日记，什么时间，今天的情感变化。",
@@ -50,21 +51,9 @@
       "- 必须在生成日记前进行思考，哪些对话是char发的，哪些对话是user发的，以事件、话题与情感来记录。"
     ].join("\n"),
     charFormat: "请直接以 {{char}} 的第一人称写日记，不需要固定格式模板。按照思维链中的要求，写出一段800字左右的私人记录。",
-    userThinkingChain: [
-      "从现在起，你是 {{user}}。请依据之前的对话内容，以 {{user}} 的第一人称写下这段剧情的私人记录。",
-      "",
-      "1. 第一人称：完全使用“我”来叙述，语气贴合 {{user}} 的人设。",
-      "2. 剧情时间：开头写明【时间】，需要出现至少一次现实时间。",
-      "3. 事件全貌：记录关键事件，不捏造，不遗漏。",
-      "4. 内心实录：真诚袒露真实情绪，允许自相矛盾。",
-      "5. 格式：直接以独白/日记形式开始，保留情绪和悬念。",
-      "",
-      "称呼对方时可以用ta。结尾可保留有情感价值的对话原句。",
-      "字数800字左右，聊天记录不计入字数。"
-    ].join("\n"),
-    userFormat: "请直接以 {{user}} 的第一人称写日记，不需要固定格式模板。写出一段800字左右的私人记录。",
     syncToFactMemory: false,
     autoSyncAfterGenerate: false,
+    factMemoryCount: 1,
     messageLimit: 5000
   };
 
@@ -101,12 +90,6 @@
       }
     }
     return node;
-  }
-
-  function escapeHtml(text) {
-    var div = document.createElement("div");
-    div.textContent = text;
-    return div.innerHTML;
   }
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -290,22 +273,6 @@
     return [{ role: "system", content: sys.join("\n\n") }, { role: "user", content: userMsg }];
   }
 
-  function buildUserDiaryMessages(ctx, settings) {
-    var sys = [];
-    sys.push("\u4f60\u7684\u4efb\u52a1\u662f\u6839\u636e\u804a\u5929\u8bb0\u5f55\u751f\u6210\u4e00\u7bc7\u7528\u6237\u65e5\u8bb0\u3002");
-    if (ctx.userPersona) sys.push("\u3010\u7528\u6237\u4eba\u8bbe\u3011" + ctx.userName + "\n" + ctx.userPersona);
-    if (ctx.charText) sys.push("\u3010\u5bf9\u65b9\u4eba\u8bbe\u3011" + ctx.charName + "\n" + ctx.charText);
-    sys.push("\u3010\u5f53\u65e5\u804a\u5929\u8bb0\u5f55\u3011\n" + (ctx.shortText || "\uff08\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55\uff09"));
-
-    var chain = fillTemplate(settings.userThinkingChain, ctx);
-    if (chain.trim()) sys.push("\u3010\u601d\u7ef4\u94fe\u3011\n" + chain);
-
-    var fmt = fillTemplate(settings.userFormat, ctx);
-    var userMsg = (fmt.trim() ? fmt : "\u8bf7\u76f4\u63a5\u4ee5 {{user}} \u7684\u7b2c\u4e00\u4eba\u5199\u65e5\u8bb0\u3002") +
-      "\n\n\u7ea6\u675f\uff1a\u4e0d\u634f\u9020\u672a\u53d1\u751f\u7684\u4e8b\uff0c\u4ee5\u771f\u5b9e\u804a\u5929\u5185\u5bb9\u4e3a\u51c6\u3002";
-    return [{ role: "system", content: sys.join("\n\n") }, { role: "user", content: userMsg }];
-  }
-
   function buildCharAnnotationMessages(ctx, userDiaryText, settings) {
     var sys = [];
     sys.push("\u4f60\u662f " + (ctx.charName || "\u89d2\u8272") + "\u3002" + (ctx.userName || "\u7528\u6237") + "\u7ed9\u4f60\u770b\u4e86\u4e00\u7bc7TA\u5199\u7684\u65e5\u8bb0\uff0c\u8bf7\u9009\u62e9\u6709\u611f\u7684\u6bb5\u843d\u7559\u4e0b\u4f60\u7684\u60f3\u6cd5\u3002");
@@ -331,9 +298,6 @@
   function generateCharDiary(roche, ctx, settings) {
     return callAI(roche, buildCharDiaryMessages(ctx, settings), 0.7);
   }
-  function generateUserDiary(roche, ctx, settings) {
-    return callAI(roche, buildUserDiaryMessages(ctx, settings), 0.7);
-  }
   function generateCharAnnotations(roche, ctx, userDiaryText, settings) {
     return callAI(roche, buildCharAnnotationMessages(ctx, userDiaryText, settings), 0.8).then(function (text) {
       try {
@@ -344,25 +308,50 @@
     });
   }
 
-  /* ---------- 同步到事实记忆（修复版） ---------- */
-  function syncFact(roche, ctx, text) {
-    var title = "\u6bcf\u65e5\u603b\u7ed3 \u00b7 " + ctx.dateKey;
-    return roche.memory.write({
-      conversationId: ctx.conversationId,
-      summaryText: text,
-      who: [ctx.userName, ctx.charName],
-      action: text.slice(0, 800),
-      when: ctx.dateKey,
-      where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
-      source: "plugin:daily-memory-summary"
-    });
+  /* ---------- 同步到事实记忆（支持条数） ---------- */
+  function syncFact(roche, ctx, text, count) {
+    var n = Math.max(1, Math.min(10, Number(count) || 1));
+    if (n === 1) {
+      return roche.memory.write({
+        conversationId: ctx.conversationId,
+        summaryText: text,
+        who: [ctx.userName, ctx.charName],
+        action: text.slice(0, 800),
+        when: ctx.dateKey,
+        where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
+        source: "plugin:daily-memory-summary"
+      });
+    }
+    // 按段落分割写入多条
+    var paragraphs = text.split(/\n\s*\n/).filter(function (p) { return p.trim().length > 20; });
+    if (paragraphs.length < n) {
+      // 段落不够，按字符数均分
+      var chunkSize = Math.ceil(text.length / n);
+      paragraphs = [];
+      for (var i = 0; i < n; i++) {
+        var chunk = text.slice(i * chunkSize, (i + 1) * chunkSize);
+        if (chunk.trim()) paragraphs.push(chunk);
+      }
+    } else {
+      paragraphs = paragraphs.slice(0, n);
+    }
+    return Promise.all(paragraphs.map(function (p, idx) {
+      return roche.memory.write({
+        conversationId: ctx.conversationId,
+        summaryText: p,
+        who: [ctx.userName, ctx.charName],
+        action: p.slice(0, 800),
+        when: ctx.dateKey,
+        where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
+        source: "plugin:daily-memory-summary#" + (idx + 1)
+      }).catch(function () {});
+    }));
   }
 
   /* ---------- 设置存储 ---------- */
   function getSettings(roche) {
     return roche.storage.get(STORAGE_SETTINGS).then(function (s) {
-      var merged = Object.assign({}, DEFAULT_SETTINGS, s || {});
-      return merged;
+      return Object.assign({}, DEFAULT_SETTINGS, s || {});
     }).catch(function () { return Object.assign({}, DEFAULT_SETTINGS); });
   }
   function saveSettings(roche, s) { return roche.storage.set(STORAGE_SETTINGS, s); }
@@ -592,6 +581,21 @@
       "  animation:dms-spin 0.8s linear infinite;vertical-align:middle;margin-right:6px;",
       "}",
       "",
+      "/* ===== 生成状态条 ===== */",
+      "." + ROOT_CLASS + " .dms-gen-status{",
+      "  display:flex;align-items:center;gap:10px;padding:16px 20px;margin-bottom:16px;",
+      "  background:rgba(196,69,54,0.06);border:1px dashed rgba(196,69,54,0.3);border-radius:var(--radius);",
+      "  font-size:14px;color:var(--red);",
+      "}",
+      "." + ROOT_CLASS + " .dms-gen-status .dms-loading{width:18px;height:18px;border-width:2.5px;margin-right:2px;}",
+      "." + ROOT_CLASS + " .dms-gen-error{",
+      "  display:flex;flex-direction:column;align-items:center;gap:12px;padding:32px 20px;margin-bottom:16px;",
+      "  background:rgba(196,69,54,0.04);border:1px solid rgba(196,69,54,0.15);border-radius:var(--radius);",
+      "  text-align:center;",
+      "}",
+      "." + ROOT_CLASS + " .dms-gen-error-msg{font-size:14px;color:var(--red);}",
+      "." + ROOT_CLASS + " .dms-gen-error-hint{font-size:12px;color:var(--ink-mute);}",
+      "",
       "/* ===== 日记页面 ===== */",
       "." + ROOT_CLASS + " .dms-diary-spread{display:flex;flex-direction:column;gap:16px;}",
       "  @media(min-width:768px){",
@@ -717,6 +721,14 @@
       "  font-size:11px;padding:8px 12px;border-radius:var(--radius-sm);margin-top:8px;",
       "  background:rgba(196,69,54,0.06);border:1px solid rgba(196,69,54,0.2);color:var(--red);",
       "}",
+      "." + ROOT_CLASS + " .dms-seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;}",
+      "." + ROOT_CLASS + " .dms-seg-btn{",
+      "  padding:6px 14px;font-size:12px;cursor:pointer;background:var(--paper);color:var(--ink-dim);",
+      "  border:none;border-right:1px solid var(--line);font-family:inherit;transition:all .15s ease;",
+      "}",
+      "." + ROOT_CLASS + " .dms-seg-btn:last-child{border-right:none;}",
+      "." + ROOT_CLASS + " .dms-seg-btn.active{background:var(--red);color:#FAF3E3;font-weight:600;}",
+      "." + ROOT_CLASS + " .dms-seg-btn:hover:not(.active){background:var(--paper-3);}",
       "",
       "/* ===== 世界书选择器 ===== */",
       "." + ROOT_CLASS + " .dms-wb-tree{max-height:200px;overflow:auto;margin-top:8px;}",
@@ -769,7 +781,9 @@
       coveredDays: [],
       worldbookTree: [],
       generating: false,
-      view: "cover",         // "cover" | "diary" | "history"
+      generatingMsg: "",
+      lastError: "",
+      view: "cover",
       currentDiary: null,
       diaryKey: "",
       doodleMode: false,
@@ -790,17 +804,16 @@
 
     /* ---------- 顶栏 ---------- */
     function buildTop() {
-      var titleText = state.view === "diary" ? "\u624b\u8d26\u65e5\u8bb0" : "\u624b\u8d26\u65e5\u8bb0";
       var subTitle = state.selectedConv
         ? convInfo(state.selectedConv).name + " \u00b7 " + toDateKey(state.selectedDate)
         : "\u4ea4\u6362\u65e5\u8bb0 \u00b7 \u4e92\u76f8\u6279\u6ce8";
       return el("div", { class: "dms-top" }, [
         el("button", { class: "dms-close", onclick: function () {
-          if (state.view !== "cover") { state.view = "cover"; renderContent(); }
+          if (state.view !== "cover") { state.view = "cover"; state.lastError = ""; renderContent(); }
           else roche.ui.closeApp();
         } }, [state.view !== "cover" ? "\u2039" : "\u00d7"]),
         el("div", { style: { flex: "1" } }, [
-          el("h1", {}, [titleText]),
+          el("h1", {}, ["\u624b\u8d26\u65e5\u8bb0"]),
           el("div", { class: "dms-sub" }, [subTitle])
         ]),
         el("button", {
@@ -823,14 +836,14 @@
           class: "dms-btn dms-btn-primary",
           disabled: !state.selectedConv || state.generating,
           onclick: function () { onOpenDiary(); }
-        }, [state.generating ? [el("span", { class: "dms-loading" }), "\u5199\u4e2d\u2026"] : "\u7ffb\u5f00\u8fd9\u4e00\u9875"]));
+        }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u7ffb\u5f00\u8fd9\u4e00\u9875"]));
       } else if (state.view === "diary") {
-        rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; renderContent(); } }, ["\u5c01\u9762"]));
+        rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; state.lastError = ""; renderContent(); } }, ["\u5c01\u9762"]));
         rightBtns.push(el("button", {
           class: "dms-btn dms-btn-primary dms-btn-sm",
           disabled: state.generating,
-          onclick: function () { onOpenDiary(); }
-        }, [state.generating ? "\u5199\u4e2d\u2026" : "\u91cd\u5199"]));
+          onclick: function () { onOpenDiary(true); }
+        }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199"]));
       } else if (state.view === "history") {
         rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; renderContent(); } }, ["\u8fd4\u56de"]));
       }
@@ -856,7 +869,6 @@
       var foot = qs(".dms-footer", root);
       if (foot) foot.remove();
       root.appendChild(buildFooter());
-      // 重新绑定设置面板
       var sp = qs(".dms-settings-panel", root);
       if (sp) sp.remove();
       var ov = qs(".dms-settings-overlay", root);
@@ -869,7 +881,6 @@
     function buildCover() {
       var wrap = el("div", { class: "dms-wrap dms-cover-anim" });
 
-      // 装饰：手账标题卡
       var heroCard = el("div", { class: "dms-card dms-fade-in", style: { textAlign: "center", padding: "28px 16px" } }, [
         el("div", { class: "dms-handwritten", style: { fontSize: "28px", color: "var(--red)", marginBottom: "6px" } }, ["\u624b\u8d26\u65e5\u8bb0"]),
         el("div", { style: { fontSize: "13px", color: "var(--ink-dim)" } }, ["\u4e0e TA \u4ea4\u6362\u5fc3\u58f0\uff0c\u5728\u5f7c\u6b64\u7684\u65e5\u8bb0\u91cc\u7559\u4e0b\u60f3\u6cd5"]),
@@ -882,26 +893,36 @@
         el("h2", {}, [el("span", { class: "dms-badge" }, ["1"]), " \u9009\u62e9\u7b14\u53cb"]),
         el("div", { class: "dms-card-sub" }, ["\u9009\u62e9\u4e00\u4e2a\u4f1a\u8bdd\uff0c\u5f00\u59cb\u4f60\u4eec\u7684\u4ea4\u6362\u65e5\u8bb0\u3002"])
       ]);
-      var convList = el("div", { class: "dms-conv-list" });
+      var convList = el("div", { class: "dms-conv-list", id: "convList" });
       if (!state.conversations.length) {
         convList.appendChild(el("div", { class: "dms-empty" }, ["\u6682\u65e0\u4f1a\u8bdd\u3002"]));
       } else {
         state.conversations.forEach(function (c) {
           var info = convInfo(c);
-          var active = state.selectedConvId === (c.conversationId || c.id);
+          var cid = c.conversationId || c.id;
+          var active = state.selectedConvId === cid;
           var avatar = info.avatar
             ? el("div", { class: "dms-avatar" }, [el("img", { src: info.avatar })])
             : el("div", { class: "dms-avatar" }, [info.name.slice(0, 1)]);
           convList.appendChild(el("div", {
             class: "dms-conv-item" + (active ? " active" : ""),
+            "data-cid": cid,
             onclick: function () {
-              state.selectedConvId = c.conversationId || c.id;
+              if (state.generating) return;
+              state.selectedConvId = cid;
               state.selectedConv = c;
-              loadShort(roche, state.selectedConvId, 500).then(function (msgs) {
+              // 只更新选中样式，不全量重建
+              var items = convList.querySelectorAll(".dms-conv-item");
+              items.forEach(function (it) { it.classList.toggle("active", it.getAttribute("data-cid") === cid); });
+              // 异步加载有记录的日期，只更新日期快捷区
+              loadShort(roche, cid, 500).then(function (msgs) {
                 state.coveredDays = coveredDays(msgs);
-                renderContent();
-              });
-              renderContent();
+                updateDatePills();
+              }).catch(function () {});
+              // 更新底栏
+              var foot = qs(".dms-footer", root);
+              if (foot) foot.remove();
+              root.appendChild(buildFooter());
             }
           }, [
             el("div", { class: "dms-check" }),
@@ -930,22 +951,12 @@
       dateInput.addEventListener("change", function () {
         if (this.value) state.selectedDate = parseDateInput(this.value);
       });
-      var dateRow = el("div", { class: "dms-date-row" }, [dateInput]);
-      if (state.coveredDays.length) {
-        var quick = el("div", { style: { marginTop: "8px", display: "flex", gap: "6px", flexWrap: "wrap" } });
-        quick.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)", alignSelf: "center" } }, ["\u6709\u8bb0\u5f55\u7684\u65e5\u671f:"]));
-        state.coveredDays.slice(0, 8).forEach(function (dk) {
-          var pill = el("span", { class: "dms-pill" }, [dk]);
-          pill.addEventListener("click", function () {
-            state.selectedDate = parseDateInput(dk);
-            dateInput.value = dk;
-          });
-          quick.appendChild(pill);
-        });
-        dateRow.appendChild(quick);
-      }
+      var dateRow = el("div", { class: "dms-date-row", id: "dateRow" }, [dateInput]);
+      var pillsContainer = el("div", { id: "datePills", style: { marginTop: "8px", display: "flex", gap: "6px", flexWrap: "wrap" } });
+      dateRow.appendChild(pillsContainer);
       dateCard.appendChild(dateRow);
       wrap.appendChild(dateCard);
+      updateDatePills();
 
       // 历史入口
       var histCard = el("div", { class: "dms-card tape-green dms-fade-in-delay", style: { cursor: "pointer" }, onclick: function () {
@@ -959,9 +970,47 @@
       return wrap;
     }
 
+    function updateDatePills() {
+      var pillsContainer = qs("#datePills", root);
+      if (!pillsContainer) return;
+      pillsContainer.innerHTML = "";
+      if (!state.coveredDays.length) return;
+      pillsContainer.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)", alignSelf: "center" } }, ["\u6709\u8bb0\u5f55\u7684\u65e5\u671f:"]));
+      state.coveredDays.slice(0, 8).forEach(function (dk) {
+        var pill = el("span", { class: "dms-pill" }, [dk]);
+        pill.addEventListener("click", function () {
+          state.selectedDate = parseDateInput(dk);
+          var di = qs("input[type=date]", root);
+          if (di) di.value = dk;
+        });
+        pillsContainer.appendChild(pill);
+      });
+    }
+
     /* ---------- 日记视图 ---------- */
     function buildDiaryView() {
       var wrap = el("div", { class: "dms-wrap dms-page-anim" });
+
+      // 生成中状态
+      if (state.generating) {
+        wrap.appendChild(el("div", { class: "dms-gen-status" }, [
+          el("span", { class: "dms-loading" }),
+          el("span", { class: "dms-handwritten", style: { fontSize: "16px" } }, [state.generatingMsg || "\u6b63\u5728\u4e66\u5199\u4e2d\u2026"]),
+          el("span", { style: { fontSize: "12px", color: "var(--ink-mute)", marginLeft: "auto" } }, ["\u8bf7\u7a0d\u5019\uff0cTA \u6b63\u5728\u56de\u5fc6\u4eca\u5929"])
+        ]));
+        return wrap;
+      }
+
+      // 生成失败，显示重试
+      if (state.lastError && !state.currentDiary) {
+        wrap.appendChild(el("div", { class: "dms-gen-error" }, [
+          el("div", { class: "dms-gen-error-msg" }, ["\u26a0 \u4e66\u5199\u5931\u8d25"]),
+          el("div", { class: "dms-gen-error-hint" }, [state.lastError]),
+          el("button", { class: "dms-btn dms-btn-primary", onclick: function () { onOpenDiary(true); } }, ["\u91cd\u65b0\u4e66\u5199"])
+        ]));
+        return wrap;
+      }
+
       if (!state.currentDiary) {
         wrap.appendChild(el("div", { class: "dms-empty" }, ["\u65e5\u8bb0\u52a0\u8f7d\u4e2d\u2026"]));
         return wrap;
@@ -984,7 +1033,6 @@
         ])
       ]));
 
-      // 涂鸦工具栏
       if (state.doodleMode) {
         charPage.appendChild(buildDoodleToolbar());
       }
@@ -994,11 +1042,9 @@
       renderAnnotatedText(charTextEl, diary.charDiary || "", diary.annotations || []);
       charBody.appendChild(charTextEl);
 
-      // 涂鸦画布
       var canvas = el("canvas", { class: "dms-doodle-canvas" + (state.doodleMode ? " active" : "") });
       charBody.appendChild(canvas);
 
-      // 便签层
       (diary.annotations || []).filter(function (a) { return a.type === "sticky"; }).forEach(function (a) {
         charBody.appendChild(makeStickyNote(a, charPage));
       });
@@ -1008,7 +1054,7 @@
       setupTextSelection(charTextEl, charPage);
       spread.appendChild(charPage);
 
-      // 右页：我的日记
+      // 右页：我的日记（user手写）
       var userPage = el("div", { class: "dms-diary-page" });
       userPage.appendChild(el("div", { class: "dms-page-header" }, [
         el("div", {}, [
@@ -1016,33 +1062,40 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
-          el("button", { class: "dms-tool-btn", onclick: function () { onGenerateUserDiary(); } }, ["AI\u4ee3\u5199"]),
           el("button", { class: "dms-tool-btn", onclick: function () { onCharAnnotate(); } }, ["\u8ba9TA\u6279\u6ce8"])
         ])
       ]));
 
       var userBody = el("div", { class: "dms-page-body" });
-      var userTextEl = el("div", { class: "dms-diary-text", id: "userDiaryText" });
-      if (diary.charAnnotations && diary.charAnnotations.length > 0) {
-        renderAnnotatedText(userTextEl, diary.userDiary || "", diary.charAnnotations);
-      } else {
-        userTextEl.textContent = diary.userDiary || "";
-        userTextEl.appendChild(el("div", { style: { marginTop: "12px", fontSize: "12px", color: "var(--ink-mute)", fontStyle: "italic" } }, ["\u70b9\u53f3\u4e0a\u89d2\u201cAI\u4ee3\u5199\u201d\u8ba9AI\u5e2e\u4f60\u5199\uff0c\u6216\u76f4\u63a5\u5728\u4e0b\u65b9\u5199\u4f60\u7684\u65e5\u8bb0\u2026"]));
-      }
 
+      // 如果user已写日记且TA有批注，显示批注后的文本
+      var userTextEl = el("div", { class: "dms-diary-text", id: "userDiaryText" });
+      var userDiaryText = diary.userDiary || "";
+      if (userDiaryText.trim() && diary.charAnnotations && diary.charAnnotations.length > 0) {
+        renderAnnotatedText(userTextEl, userDiaryText, diary.charAnnotations);
+      } else {
+        userTextEl.style.display = "none";
+      }
+      userBody.appendChild(userTextEl);
+
+      // user手写编辑区（始终显示）
       var editArea = el("textarea", {
         class: "dms-user-diary-edit",
-        placeholder: "\u5728\u8fd9\u91cc\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0\u2026",
+        placeholder: "\u5728\u8fd9\u91cc\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0\u2026\n\u7528\u4f60\u81ea\u5df1\u7684\u8bdd\uff0c\u8bb0\u4e0b\u4eca\u5929\u7684\u5fc3\u58f0\u3002",
         oninput: function () {
           state.currentDiary.userDiary = this.value;
           state.currentDiary.userDiaryAt = Date.now();
           saveCurrentDiary();
         }
       });
-      editArea.value = diary.userDiary || "";
-
-      userBody.appendChild(userTextEl);
+      editArea.value = userDiaryText;
       userBody.appendChild(editArea);
+
+      // 提示语
+      if (!userDiaryText.trim()) {
+        userBody.appendChild(el("div", { style: { marginTop: "8px", fontSize: "12px", color: "var(--ink-mute)", fontStyle: "italic", textAlign: "center" } }, ["\u2712 \u8fd9\u91cc\u662f\u4f60\u7684\u624b\u5199\u533a\uff0c\u5c3d\u60c5\u5199\u4e0b\u5fc3\u58f0\u5427"]));
+      }
+
       userPage.appendChild(userBody);
       spread.appendChild(userPage);
 
@@ -1056,16 +1109,20 @@
           } }, ["\u590d\u5236TA\u65e5\u8bb0"]),
           el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
             if (!state.currentDiary) return;
-            roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
+            var ctx = state.currentDiary.ctx || {};
+            var text = state.currentDiary.charDiary || "";
+            var count = state.settings.factMemoryCount || 1;
+            roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\uff08" + count + " \u6761\uff09\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
               if (!ok) return;
-              return syncFact(roche, state.currentDiary.ctx || {}, state.currentDiary.charDiary || "").then(function () { toast("\u5df2\u5199\u5165\u4e8b\u5b9e\u8bb0\u5fc6"); });
-            }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
+              toast("\u540c\u6b65\u4e2d\u2026");
+              return syncFact(roche, ctx, text, count).then(function () { toast("\u5df2\u5199\u5165 " + count + " \u6761\u4e8b\u5b9e\u8bb0\u5fc6"); }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
+            });
           } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]),
           el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
             if (!state.currentDiary) return;
             roche.ui.confirm({ title: "\u5220\u9664\u65e5\u8bb0", message: "\u5220\u9664\u8fd9\u7bc7\u65e5\u8bb0\u53ca\u6240\u6709\u6279\u6ce8\uff1f" }).then(function (ok) {
               if (!ok) return;
-              deleteDiary(roche, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; renderContent(); });
+              deleteDiary(roche, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; state.currentDiary = null; renderContent(); });
             });
           } }, ["\u5220\u9664\u65e5\u8bb0"])
         ])
@@ -1095,7 +1152,6 @@
       }).filter(function (a) { return a.start >= 0; })
         .sort(function (a, b) { return a.start - b.start; });
 
-      // 合并重叠
       var merged = [];
       var lastEnd = -1;
       textAnnots.forEach(function (a) {
@@ -1103,7 +1159,6 @@
       });
 
       var pos = 0;
-      var markerIdx = 0;
       merged.forEach(function (a) {
         if (a.start > pos) {
           container.appendChild(document.createTextNode(text.slice(pos, a.start)));
@@ -1130,7 +1185,6 @@
         }
         container.appendChild(span);
         pos = a.end;
-        markerIdx++;
       });
       if (pos < text.length) {
         container.appendChild(document.createTextNode(text.slice(pos)));
@@ -1146,7 +1200,6 @@
           if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
           var selectedText = sel.toString().trim();
           if (selectedText.length < 1) { hideAnnotMenu(); return; }
-          // 确认选区在 charDiaryText 内
           var range = sel.getRangeAt(0);
           if (!textEl.contains(range.commonAncestorContainer)) { hideAnnotMenu(); return; }
           showAnnotMenu(selectedText, range, pageEl);
@@ -1208,7 +1261,6 @@
       document.body.appendChild(menu);
       state.annotMenuEl = menu;
 
-      // 点击外部关闭
       setTimeout(function () {
         document.addEventListener("mousedown", closeAnnotOnOutside);
       }, 0);
@@ -1266,7 +1318,6 @@
         sticky.remove();
       } }, ["\u00d7"]);
 
-      // 拖拽
       var dragging = false, offsetX = 0, offsetY = 0;
       sticky.addEventListener("pointerdown", function (e) {
         if (e.target === text || e.target === removeBtn) return;
@@ -1355,11 +1406,7 @@
       function redraw() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
         strokes.forEach(function (stroke) {
-          if (stroke.tool === "highlighter") {
-            ctx.globalAlpha = 0.35;
-          } else {
-            ctx.globalAlpha = 1;
-          }
+          ctx.globalAlpha = stroke.tool === "highlighter" ? 0.35 : 1;
           ctx.strokeStyle = stroke.color;
           ctx.lineWidth = stroke.tool === "highlighter" ? 12 : 2;
           ctx.lineCap = "round";
@@ -1398,12 +1445,7 @@
         e.preventDefault();
         currentStroke.points.push(getPos(e));
         redraw();
-        // 实时绘制当前笔触
-        if (currentStroke.tool === "highlighter") {
-          ctx.globalAlpha = 0.35;
-        } else {
-          ctx.globalAlpha = 1;
-        }
+        ctx.globalAlpha = currentStroke.tool === "highlighter" ? 0.35 : 1;
         ctx.strokeStyle = currentStroke.color;
         ctx.lineWidth = currentStroke.width;
         ctx.lineCap = "round";
@@ -1493,35 +1535,29 @@
       sec2.appendChild(cf);
       body.appendChild(sec2);
 
-      // 我的思维链
-      var sec3 = el("div", { class: "dms-settings-section" }, [
-        el("h3", {}, ["\u6211\u7684\u601d\u7ef4\u94fe"]),
-        el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["{{user}}\u4f1a\u88ab\u66ff\u6362\u4e3a\u7528\u6237\u540d"])
-      ]);
-      var utc = el("textarea", { class: "dms-textarea", placeholder: "\u8bf7\u8f93\u5165\u601d\u7ef4\u94fe\u2026" });
-      utc.value = state.settings.userThinkingChain || "";
-      utc.addEventListener("change", function () {
-        state.settings.userThinkingChain = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
-      });
-      sec3.appendChild(utc);
-      sec3.appendChild(el("div", { class: "dms-hint", style: { marginTop: "6px" } }, ["\u6211\u7684\u8f93\u51fa\u683c\u5f0f"]));
-      var uf = el("textarea", { class: "dms-textarea", style: { minHeight: "60px" }, placeholder: "\u8f93\u51fa\u683c\u5f0f\u6307\u4ee4\u2026" });
-      uf.value = state.settings.userFormat || "";
-      uf.addEventListener("change", function () {
-        state.settings.userFormat = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
-      });
-      sec3.appendChild(uf);
-      body.appendChild(sec3);
-
       // 记忆同步
       var sec4 = el("div", { class: "dms-settings-section" }, [
         el("h3", {}, ["\u8bb0\u5fc6\u540c\u6b65"])
       ]);
       sec4.appendChild(makeSwitch("\u751f\u6210\u540e\u81ea\u52a8\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", "\u5199\u5165\u7684\u662fRoche\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\uff0c\u5378\u8f7d\u63d2\u4ef6\u4e0d\u4f1a\u81ea\u52a8\u5220\u9664\u3002", state.settings.autoSyncAfterGenerate, function (v) {
         state.settings.autoSyncAfterGenerate = v; saveSettings(roche, state.settings);
+        if (v) { toggleSettings(true); renderContent(); }
+        else renderContent();
       }));
+      // 事实记忆条数选择
+      if (state.settings.autoSyncAfterGenerate || true) {
+        sec4.appendChild(el("div", { class: "dms-row", style: { marginTop: "8px" } }, [
+          el("div", { style: { flex: "1" } }, [
+            el("div", { class: "dms-label" }, ["\u6ce8\u5165\u6761\u6570"]),
+            el("div", { class: "dms-hint" }, ["\u540c\u6b65\u65f6\u5199\u5165\u51e0\u6761\u4e8b\u5b9e\u8bb0\u5fc6"])
+          ]),
+          buildCountSelector(state.settings.factMemoryCount || 1, function (v) {
+            state.settings.factMemoryCount = v; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
+          })
+        ]));
+      }
       if (state.settings.autoSyncAfterGenerate) {
-        sec4.appendChild(el("div", { class: "dms-warn-box" }, ["\u5df2\u5f00\u542f\u81ea\u52a8\u540c\u6b65\uff1a\u6bcf\u6b21\u751f\u6210\u6210\u529f\u540e\u4f1a\u5199\u5165\u4e00\u6761\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u8bf7\u8c28\u614e\u4f7f\u7528\u3002"]));
+        sec4.appendChild(el("div", { class: "dms-warn-box" }, ["\u5df2\u5f00\u542f\u81ea\u52a8\u540c\u6b65\uff1a\u6bcf\u6b21\u751f\u6210\u6210\u529f\u540e\u4f1a\u5199\u5165 " + (state.settings.factMemoryCount || 1) + " \u6761\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u8bf7\u8c28\u614e\u4f7f\u7528\u3002"]));
       }
       body.appendChild(sec4);
 
@@ -1540,6 +1576,23 @@
 
       panel.appendChild(body);
       return panel;
+    }
+
+    function buildCountSelector(currentVal, onChange) {
+      var counts = [1, 2, 3, 5, 10];
+      var seg = el("div", { class: "dms-seg" });
+      counts.forEach(function (n) {
+        var btn = el("button", {
+          class: "dms-seg-btn" + (currentVal === n ? " active" : ""),
+          onclick: function () {
+            seg.querySelectorAll(".dms-seg-btn").forEach(function (b) { b.classList.remove("active"); });
+            btn.classList.add("active");
+            onChange(n);
+          }
+        }, [String(n)]);
+        seg.appendChild(btn);
+      });
+      return seg;
     }
 
     function buildSettingsOverlay() {
@@ -1638,6 +1691,7 @@
               state.selectedConvId = it.conversationId || "";
               state.selectedConv = { conversationId: it.conversationId, name: it.charName, handle: it.charName };
               state.selectedDate = parseDateInput(it.dateKey || toDateInput(new Date()));
+              state.lastError = "";
               state.view = "diary";
               renderContent();
             } });
@@ -1672,32 +1726,35 @@
     }
 
     /* ---------- 打开/生成日记 ---------- */
-    function onOpenDiary() {
+    function onOpenDiary(forceRegen) {
       if (state.generating) return;
       if (!state.selectedConv) { toast("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"); return; }
-      state.generating = true;
-      renderContent();
 
       var conv = state.selectedConv;
       var cid = conv.conversationId || conv.id;
-      var info = convInfo(conv);
       state.diaryKey = cid + ":" + toDateKey(state.selectedDate);
+      state.lastError = "";
 
-      // 先检查是否已有日记
+      // 检查是否已有日记
       getDiary(roche, state.diaryKey).then(function (existing) {
-        if (existing && existing.charDiary) {
+        if (existing && existing.charDiary && !forceRegen) {
           // 已有日记，直接打开
           state.currentDiary = existing;
-          state.generating = false;
           state.view = "diary";
           renderContent();
           return;
         }
         // 生成新日记
+        state.generating = true;
+        state.generatingMsg = forceRegen ? "TA \u6b63\u5728\u91cd\u5199\u2026" : "TA \u6b63\u5728\u56de\u5fc6\u4eca\u5929\u2026";
+        state.view = "diary";
+        renderContent();
+
         return buildCtx(roche, state, state.selectedDate).then(function (ctx) {
           if (!ctx.dayShort.length) {
             state.generating = false;
-            toast("\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55\uff0c\u8bf7\u8c03\u6574\u65e5\u671f");
+            state.generatingMsg = "";
+            state.lastError = "\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55\uff0c\u8bf7\u8c03\u6574\u65e5\u671f";
             renderContent();
             return;
           }
@@ -1709,22 +1766,23 @@
               dateKey: ctx.dateKey,
               isGroup: ctx.isGroup,
               charDiary: text || "",
-              userDiary: "",
-              annotations: [],
-              doodles: [],
-              charAnnotations: [],
+              userDiary: (existing && existing.userDiary) || "",
+              annotations: (existing && existing.annotations) || [],
+              doodles: (existing && existing.doodles) || [],
+              charAnnotations: (existing && existing.charAnnotations) || [],
               ctx: ctx,
-              createdAt: Date.now(),
+              createdAt: (existing && existing.createdAt) || Date.now(),
               updatedAt: Date.now()
             };
             return saveDiary(roche, state.diaryKey, diaryData).then(function () {
               state.currentDiary = diaryData;
               if (state.settings.autoSyncAfterGenerate) {
-                return syncFact(roche, ctx, text || "").catch(function () {});
+                return syncFact(roche, ctx, text || "", state.settings.factMemoryCount || 1).catch(function () {});
               }
             }).then(function () {
               state.generating = false;
-              state.view = "diary";
+              state.generatingMsg = "";
+              state.lastError = "";
               renderContent();
               toast("\u65e5\u8bb0\u5df2\u5199\u597d");
             });
@@ -1733,30 +1791,8 @@
       }).catch(function (e) {
         console.error("[DMS]", e);
         state.generating = false;
-        toast("\u751f\u6210\u5931\u8d25: " + (e && e.message || e));
-        renderContent();
-      });
-    }
-
-    /* ---------- AI代写用户日记 ---------- */
-    function onGenerateUserDiary() {
-      if (state.generating) return;
-      if (!state.currentDiary || !state.currentDiary.ctx) { toast("\u65e0\u4e0a\u4e0b\u6587"); return; }
-      state.generating = true;
-      toast("\u5199\u4e2d\u2026");
-      var ctx = state.currentDiary.ctx;
-      generateUserDiary(roche, ctx, state.settings).then(function (text) {
-        state.currentDiary.userDiary = text || "";
-        state.currentDiary.userDiaryAt = Date.now();
-        state.currentDiary.updatedAt = Date.now();
-        return saveCurrentDiary();
-      }).then(function () {
-        toast("\u5df2\u5199\u597d");
-      }).catch(function (e) {
-        toast("\u5931\u8d25");
-        console.error(e);
-      }).then(function () {
-        state.generating = false;
+        state.generatingMsg = "";
+        state.lastError = (e && e.message || String(e) || "\u672a\u77e5\u9519\u8bef");
         renderContent();
       });
     }
@@ -1768,7 +1804,8 @@
       var userText = state.currentDiary.userDiary || "";
       if (!userText.trim()) { toast("\u8bf7\u5148\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0"); return; }
       state.generating = true;
-      toast("TA\u6b63\u5728\u8bfb\u2026");
+      state.generatingMsg = "TA \u6b63\u5728\u8bfb\u4f60\u7684\u65e5\u8bb0\u2026";
+      renderContent();
       var ctx = state.currentDiary.ctx;
       generateCharAnnotations(roche, ctx, userText, state.settings).then(function (annots) {
         if (!annots || !annots.length) {
@@ -1789,6 +1826,7 @@
         console.error(e);
       }).then(function () {
         state.generating = false;
+        state.generatingMsg = "";
         renderContent();
       });
     }
@@ -1838,7 +1876,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.0.0",
+    version: "2.1.0",
     apps: [
       {
         id: "daily-memory-summary-home",

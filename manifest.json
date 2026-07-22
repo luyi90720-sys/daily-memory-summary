@@ -1,8 +1,8 @@
 {
   "id": "daily-memory-summary",
   "name": "手账日记",
-  "version": "2.0.0",
-  "description": "手账本风格的交换日记 — char与user互相批注涂鸦，可选同步到事实记忆。",
+  "version": "2.1.0",
+  "description": "手账本风格的交换日记 - char写日记，user手写日记，互相批注涂鸦，可选同步到事实记忆。",
   "author": "Roche Plugin",
   "entry": "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
   "hash": "",

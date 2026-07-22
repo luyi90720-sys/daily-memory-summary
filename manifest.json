@@ -1,19 +1,19 @@
 {
-    "version":  "1.2.0",
-    "entry":  "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
-    "id":  "daily-memory-summary",
-    "name":  "\\u6bcf\\u65e5\\u8bb0\\u5fc6\\u603b\\u7ed3",
-    "permissions":  [
-                        "persona:read",
-                        "character:read",
-                        "memory:read",
-                        "memory:write",
-                        "worldbook:read",
-                        "ai:chat",
-                        "storage",
-                        "ui"
-                    ],
-    "description":  "\\u6309\\u5929\\u5206\\u5272\\u4f1a\\u8bdd\\u77ed\\u671f\\u8bb0\\u5fc6\\uff0c\\u5bfc\\u5165\\u4eba\\u8bbe\\u4e0e\\u4e16\\u754c\\u4e66\\uff0c\\u81ea\\u5b9a\\u4e49\\u601d\\u7ef4\\u94fe\\u4e0e\\u683c\\u5f0f\\u751f\\u6210\\u6bcf\\u65e5\\u603b\\u7ed3\\uff0c\\u53ef\\u9009\\u540c\\u6b65\\u5230\\u4e8b\\u5b9e\\u8bb0\\u5fc6\\u3002",
-    "author":  "Roche Plugin",
-    "hash":  ""
+  "id": "daily-memory-summary",
+  "name": "手账日记",
+  "version": "2.0.0",
+  "description": "手账本风格的交换日记 — char与user互相批注涂鸦，可选同步到事实记忆。",
+  "author": "Roche Plugin",
+  "entry": "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
+  "hash": "",
+  "permissions": [
+    "persona:read",
+    "character:read",
+    "memory:read",
+    "memory:write",
+    "worldbook:read",
+    "ai:chat",
+    "storage",
+    "ui"
+  ]
 }

@@ -1,8 +1,9 @@
 /*
- * 手账日记 (daily-memory-summary) v2.1.0
+ * 手账日记 (daily-memory-summary) v2.1.1
  * 手账本风格的每日日记 — char写日记，user手写日记，互相批注涂鸦。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
- * v2.1.0: 删除AI代写user日记、修复生成状态提示、修复翻页失败可重试、修复选会话不重建、添加事实记忆条数选择
+ * v2.1.1: 修复appendChild嵌套数组错误、移除事实记忆条数选择（改为按天拆分，user自选日期）
+ * v2.1.0: 删除AI代写user日记、修复生成状态提示、修复翻页失败可重试、修复选会话不重建
  */
 (function () {
   "use strict";
@@ -53,7 +54,6 @@
     charFormat: "请直接以 {{char}} 的第一人称写日记，不需要固定格式模板。按照思维链中的要求，写出一段800字左右的私人记录。",
     syncToFactMemory: false,
     autoSyncAfterGenerate: false,
-    factMemoryCount: 1,
     messageLimit: 5000
   };
 
@@ -80,16 +80,21 @@
         node.setAttribute(k, v);
       }
     }
-    if (children) {
-      if (!Array.isArray(children)) children = [children];
-      for (var i = 0; i < children.length; i++) {
-        var c = children[i];
-        if (c == null || c === false) continue;
-        if (typeof c === "string") c = document.createTextNode(c);
-        node.appendChild(c);
-      }
-    }
+    if (children != null) appendChildren(node, children);
     return node;
+  }
+
+  function appendChildren(node, children) {
+    if (!Array.isArray(children)) children = [children];
+    for (var i = 0; i < children.length; i++) {
+      var c = children[i];
+      if (c == null || c === false) continue;
+      if (Array.isArray(c)) { appendChildren(node, c); continue; }
+      if (typeof c === "string" || typeof c === "number" || typeof c === "boolean") {
+        c = document.createTextNode(String(c));
+      }
+      node.appendChild(c);
+    }
   }
 
   function pad2(n) { return String(n).padStart(2, "0"); }
@@ -308,44 +313,17 @@
     });
   }
 
-  /* ---------- 同步到事实记忆（支持条数） ---------- */
-  function syncFact(roche, ctx, text, count) {
-    var n = Math.max(1, Math.min(10, Number(count) || 1));
-    if (n === 1) {
-      return roche.memory.write({
-        conversationId: ctx.conversationId,
-        summaryText: text,
-        who: [ctx.userName, ctx.charName],
-        action: text.slice(0, 800),
-        when: ctx.dateKey,
-        where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
-        source: "plugin:daily-memory-summary"
-      });
-    }
-    // 按段落分割写入多条
-    var paragraphs = text.split(/\n\s*\n/).filter(function (p) { return p.trim().length > 20; });
-    if (paragraphs.length < n) {
-      // 段落不够，按字符数均分
-      var chunkSize = Math.ceil(text.length / n);
-      paragraphs = [];
-      for (var i = 0; i < n; i++) {
-        var chunk = text.slice(i * chunkSize, (i + 1) * chunkSize);
-        if (chunk.trim()) paragraphs.push(chunk);
-      }
-    } else {
-      paragraphs = paragraphs.slice(0, n);
-    }
-    return Promise.all(paragraphs.map(function (p, idx) {
-      return roche.memory.write({
-        conversationId: ctx.conversationId,
-        summaryText: p,
-        who: [ctx.userName, ctx.charName],
-        action: p.slice(0, 800),
-        when: ctx.dateKey,
-        where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
-        source: "plugin:daily-memory-summary#" + (idx + 1)
-      }).catch(function () {});
-    }));
+  /* ---------- 同步到事实记忆 ---------- */
+  function syncFact(roche, ctx, text) {
+    return roche.memory.write({
+      conversationId: ctx.conversationId,
+      summaryText: text,
+      who: [ctx.userName, ctx.charName],
+      action: text.slice(0, 800),
+      when: ctx.dateKey,
+      where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
+      source: "plugin:daily-memory-summary"
+    });
   }
 
   /* ---------- 设置存储 ---------- */
@@ -721,14 +699,6 @@
       "  font-size:11px;padding:8px 12px;border-radius:var(--radius-sm);margin-top:8px;",
       "  background:rgba(196,69,54,0.06);border:1px solid rgba(196,69,54,0.2);color:var(--red);",
       "}",
-      "." + ROOT_CLASS + " .dms-seg{display:inline-flex;border:1px solid var(--line);border-radius:var(--radius-sm);overflow:hidden;}",
-      "." + ROOT_CLASS + " .dms-seg-btn{",
-      "  padding:6px 14px;font-size:12px;cursor:pointer;background:var(--paper);color:var(--ink-dim);",
-      "  border:none;border-right:1px solid var(--line);font-family:inherit;transition:all .15s ease;",
-      "}",
-      "." + ROOT_CLASS + " .dms-seg-btn:last-child{border-right:none;}",
-      "." + ROOT_CLASS + " .dms-seg-btn.active{background:var(--red);color:#FAF3E3;font-weight:600;}",
-      "." + ROOT_CLASS + " .dms-seg-btn:hover:not(.active){background:var(--paper-3);}",
       "",
       "/* ===== 世界书选择器 ===== */",
       "." + ROOT_CLASS + " .dms-wb-tree{max-height:200px;overflow:auto;margin-top:8px;}",
@@ -1111,11 +1081,10 @@
             if (!state.currentDiary) return;
             var ctx = state.currentDiary.ctx || {};
             var text = state.currentDiary.charDiary || "";
-            var count = state.settings.factMemoryCount || 1;
-            roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\uff08" + count + " \u6761\uff09\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
+            roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
               if (!ok) return;
               toast("\u540c\u6b65\u4e2d\u2026");
-              return syncFact(roche, ctx, text, count).then(function () { toast("\u5df2\u5199\u5165 " + count + " \u6761\u4e8b\u5b9e\u8bb0\u5fc6"); }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
+              return syncFact(roche, ctx, text).then(function () { toast("\u5df2\u5199\u5165\u4e8b\u5b9e\u8bb0\u5fc6"); }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
             });
           } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]),
           el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
@@ -1541,23 +1510,10 @@
       ]);
       sec4.appendChild(makeSwitch("\u751f\u6210\u540e\u81ea\u52a8\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", "\u5199\u5165\u7684\u662fRoche\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\uff0c\u5378\u8f7d\u63d2\u4ef6\u4e0d\u4f1a\u81ea\u52a8\u5220\u9664\u3002", state.settings.autoSyncAfterGenerate, function (v) {
         state.settings.autoSyncAfterGenerate = v; saveSettings(roche, state.settings);
-        if (v) { toggleSettings(true); renderContent(); }
-        else renderContent();
+        renderContent();
       }));
-      // 事实记忆条数选择
-      if (state.settings.autoSyncAfterGenerate || true) {
-        sec4.appendChild(el("div", { class: "dms-row", style: { marginTop: "8px" } }, [
-          el("div", { style: { flex: "1" } }, [
-            el("div", { class: "dms-label" }, ["\u6ce8\u5165\u6761\u6570"]),
-            el("div", { class: "dms-hint" }, ["\u540c\u6b65\u65f6\u5199\u5165\u51e0\u6761\u4e8b\u5b9e\u8bb0\u5fc6"])
-          ]),
-          buildCountSelector(state.settings.factMemoryCount || 1, function (v) {
-            state.settings.factMemoryCount = v; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
-          })
-        ]));
-      }
       if (state.settings.autoSyncAfterGenerate) {
-        sec4.appendChild(el("div", { class: "dms-warn-box" }, ["\u5df2\u5f00\u542f\u81ea\u52a8\u540c\u6b65\uff1a\u6bcf\u6b21\u751f\u6210\u6210\u529f\u540e\u4f1a\u5199\u5165 " + (state.settings.factMemoryCount || 1) + " \u6761\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u8bf7\u8c28\u614e\u4f7f\u7528\u3002"]));
+        sec4.appendChild(el("div", { class: "dms-warn-box" }, ["\u5df2\u5f00\u542f\u81ea\u52a8\u540c\u6b65\uff1a\u6bcf\u6b21\u751f\u6210\u6210\u529f\u540e\u4f1a\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u8bf7\u8c28\u614e\u4f7f\u7528\u3002"]));
       }
       body.appendChild(sec4);
 
@@ -1576,23 +1532,6 @@
 
       panel.appendChild(body);
       return panel;
-    }
-
-    function buildCountSelector(currentVal, onChange) {
-      var counts = [1, 2, 3, 5, 10];
-      var seg = el("div", { class: "dms-seg" });
-      counts.forEach(function (n) {
-        var btn = el("button", {
-          class: "dms-seg-btn" + (currentVal === n ? " active" : ""),
-          onclick: function () {
-            seg.querySelectorAll(".dms-seg-btn").forEach(function (b) { b.classList.remove("active"); });
-            btn.classList.add("active");
-            onChange(n);
-          }
-        }, [String(n)]);
-        seg.appendChild(btn);
-      });
-      return seg;
     }
 
     function buildSettingsOverlay() {
@@ -1777,7 +1716,7 @@
             return saveDiary(roche, state.diaryKey, diaryData).then(function () {
               state.currentDiary = diaryData;
               if (state.settings.autoSyncAfterGenerate) {
-                return syncFact(roche, ctx, text || "", state.settings.factMemoryCount || 1).catch(function () {});
+                return syncFact(roche, ctx, text || "").catch(function () {});
               }
             }).then(function () {
               state.generating = false;
@@ -1876,7 +1815,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.1.0",
+    version: "2.1.1",
     apps: [
       {
         id: "daily-memory-summary-home",

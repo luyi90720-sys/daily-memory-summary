@@ -1,8 +1,9 @@
 /*
- * 手账日记 (daily-memory-summary) v2.1.1
+ * 手账日记 (daily-memory-summary) v2.1.2
  * 手账本风格的每日日记 — char写日记，user手写日记，互相批注涂鸦。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
- * v2.1.1: 修复appendChild嵌套数组错误、移除事实记忆条数选择（改为按天拆分，user自选日期）
+ * v2.1.2: 优化封面交互—会话列表限高滚动、选会话后自动滚动到日期卡并高亮、未选会话时日期卡显示引导提示
+ * v2.1.1: 修复appendChild嵌套数组错误、移除事实记忆条数选择
  * v2.1.0: 删除AI代写user日记、修复生成状态提示、修复翻页失败可重试、修复选会话不重建
  */
 (function () {
@@ -465,7 +466,16 @@
       "}",
       "",
       "/* ===== 会话列表 ===== */",
-      "." + ROOT_CLASS + " .dms-conv-list{display:flex;flex-direction:column;gap:8px;}",
+      "." + ROOT_CLASS + " .dms-conv-list{display:flex;flex-direction:column;gap:8px;max-height:240px;overflow-y:auto;padding:2px;}",
+      "." + ROOT_CLASS + " .dms-conv-list::-webkit-scrollbar{width:6px;}",
+      "." + ROOT_CLASS + " .dms-conv-list::-webkit-scrollbar-thumb{background:var(--tape-pink);border-radius:3px;}",
+      "." + ROOT_CLASS + " .dms-conv-list::-webkit-scrollbar-track{background:transparent;}",
+      "@keyframes dms-flash-anim{0%,100%{box-shadow:0 0 0 0 rgba(196,69,54,0);}50%{box-shadow:0 0 0 4px rgba(196,69,54,0.35);}}",
+      "." + ROOT_CLASS + " .dms-flash{animation:dms-flash-anim 1.2s ease-out 1;border-radius:var(--radius);}",
+      "." + ROOT_CLASS + " .dms-hint-box{",
+      "  font-size:12px;padding:8px 12px;border-radius:var(--radius-sm);margin-top:6px;",
+      "  background:rgba(196,69,54,0.06);border:1px dashed rgba(196,69,54,0.3);color:var(--red);",
+      "}",
       "." + ROOT_CLASS + " .dms-conv-item{",
       "  display:flex;align-items:center;gap:10px;padding:10px 12px;cursor:pointer;",
       "  background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-sm);transition:all .15s ease;",
@@ -893,6 +903,24 @@
               var foot = qs(".dms-footer", root);
               if (foot) foot.remove();
               root.appendChild(buildFooter());
+              // 启用日期输入并移除"未选会话"提示
+              var di = qs("input[type=date]", root);
+              if (di) di.disabled = false;
+              var hintBox = qs(".dms-hint-box", root);
+              if (hintBox) hintBox.remove();
+              // 自动滚动到日期卡，让用户看到下一步
+              var dateCardEl = qs("#dateRow", root);
+              if (dateCardEl && dateCardEl.closest) {
+                var card = dateCardEl.closest(".dms-card");
+                if (card && card.scrollIntoView) {
+                  setTimeout(function () {
+                    card.scrollIntoView({ behavior: "smooth", block: "center" });
+                    // 高亮提示
+                    card.classList.add("dms-flash");
+                    setTimeout(function () { card.classList.remove("dms-flash"); }, 1200);
+                  }, 80);
+                }
+              }
             }
           }, [
             el("div", { class: "dms-check" }),
@@ -915,9 +943,14 @@
         el("h2", {}, [el("span", { class: "dms-badge" }, ["2"]), " \u7ffb\u5230\u54ea\u4e00\u5929"]),
         el("div", { class: "dms-card-sub" }, ["\u6309\u672c\u5730\u65f6\u533a 00:00 ~ \u6b21\u65e5 00:00 \u5207\u5272\u5f53\u5929\u8bb0\u5f55\u3002"])
       ]);
+      // 未选会话时的提示
+      if (!state.selectedConv) {
+        dateCard.appendChild(el("div", { class: "dms-hint-box" }, ["\u2191 \u8bf7\u5148\u5728\u4e0a\u9762\u9009\u62e9\u7b14\u53cb\uff0c\u9009\u597d\u540e\u8fd9\u91cc\u4f1a\u51fa\u73b0\u65e5\u671f\u9009\u62e9\u3002"]));
+      }
       var dateInput = el("input", { type: "date", class: "dms-input" });
       dateInput.value = toDateInput(state.selectedDate);
       dateInput.max = toDateInput(new Date());
+      dateInput.disabled = !state.selectedConv;
       dateInput.addEventListener("change", function () {
         if (this.value) state.selectedDate = parseDateInput(this.value);
       });
@@ -1815,7 +1848,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.1.1",
+    version: "2.1.2",
     apps: [
       {
         id: "daily-memory-summary-home",

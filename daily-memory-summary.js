@@ -76,7 +76,9 @@
     rememberSyncChoice: false,
     autoSyncAfterGenerate: false,
     swapMode: true,
-    messageLimit: 5000
+    messageLimit: 5000,
+    defaultStickyStyle: null,       // user 自己添加便签时的默认样式（null=随机）
+    defaultCharStickyStyle: null    // char 给 user 写便签时的默认样式（null=随机）
   };
 
   /* ---------- DOM 工具 ---------- */
@@ -697,11 +699,25 @@
       "  border-radius:2px;cursor:move;line-height:1.5;",
       "  transform:rotate(-1deg);font-family:'Ma Shan Zheng','KaiTi',cursive;",
       "}",
+      "/* 10款内置便签样式 */",
+      "." + ROOT_CLASS + " .dms-sticky.note-0{background:#FFE4A0;transform:rotate(-1deg);}",
+      "." + ROOT_CLASS + " .dms-sticky.note-1{background:#FFCDD2;transform:rotate(1.5deg);border-radius:12px;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-2{background:#C8E6C9;transform:rotate(-2deg);border-left:3px solid #4CAF50;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-3{background:#BBDEFB;transform:rotate(1deg);border:1px dashed #1976D2;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-4{background:#FFF9C4;transform:rotate(-0.5deg);box-shadow:3px 3px 0 #FBC02D;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-5{background:#F8BBD0;transform:rotate(2deg);border-radius:20px;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-6{background:#D1C4E9;transform:rotate(-1.5deg);border-top:3px solid #7B1FA2;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-7{background:#FFCCBC;transform:rotate(0.5deg);box-shadow:2px 2px 4px rgba(255,87,34,0.3);}",
+      "." + ROOT_CLASS + " .dms-sticky.note-8{background:#B2DFDB;transform:rotate(-1deg);border-radius:0 12px 0 12px;}",
+      "." + ROOT_CLASS + " .dms-sticky.note-9{background:#F0F4C3;transform:rotate(1deg);border:1px solid #827717;box-shadow:3px 3px 6px rgba(130,119,23,0.2);}",
       "." + ROOT_CLASS + " .dms-sticky-remove{",
       "  position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;",
       "  background:var(--red);color:#FAF3E3;font-size:10px;display:flex;align-items:center;justify-content:center;",
       "  cursor:pointer;border:none;",
       "}",
+      "." + ROOT_CLASS + " .dms-sticky-style-picker{display:flex;gap:6px;flex-wrap:wrap;padding:6px;}",
+      "." + ROOT_CLASS + " .dms-sticky-style-item{width:28px;height:28px;border-radius:4px;cursor:pointer;border:2px solid transparent;transition:all .15s;}",
+      "." + ROOT_CLASS + " .dms-sticky-style-item.active{border-color:var(--red);transform:scale(1.15);}",
       "",
       "/* ===== 工具栏 ===== */",
       "." + ROOT_CLASS + " .dms-toolbar{",
@@ -965,6 +981,11 @@
 
     /* ---------- 内容渲染 ---------- */
     function renderContent() {
+      // 清理可能残留在 document.body 上的浮层（便签样式选择器、表情包选择器、批注菜单、同步对话框）
+      [".dms-sticky-style-popup", ".dms-sticker-picker", ".dms-annot-menu", ".dms-sync-overlay"].forEach(function (sel) {
+        var nodes = document.querySelectorAll(sel);
+        nodes.forEach(function (n) { n.remove(); });
+      });
       var body = qs(".dms-body", root);
       if (!body) return;
       body.innerHTML = "";
@@ -1291,6 +1312,15 @@
         userTextEl.style.display = "none";
       }
       userBody.appendChild(userTextEl);
+
+      // char 给 user 的便签（type=sticky）作为实物便签 DOM 渲染到 user 页
+      (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; }).forEach(function (a) {
+        userBody.appendChild(makeStickyNote(a, userPage));
+      });
+      // char 给 user 贴的表情包（如果有）
+      (diary.charStickers || []).forEach(function (s) {
+        userBody.appendChild(makeSticker(s, userPage));
+      });
 
       // 非交换模式：显示可编辑区
       // 交换模式 charDiary：显示只读区（user 日记已写完）
@@ -1621,41 +1651,94 @@
 
     /* ---------- 便签 ---------- */
     function addStickyNote(pageEl) {
-      var colors = ["#FFE4A0", "#FFCDD2", "#C8E6C9", "#BBDEFB"];
-      var color = colors[Math.floor(Math.random() * colors.length)];
+      if (!state.currentDiary) return;
+      // 使用 user 设置的默认便签样式，或随机一款
+      var styleId = (state.settings.defaultStickyStyle != null) ? state.settings.defaultStickyStyle : Math.floor(Math.random() * 10);
       var annot = {
         id: crypto.randomUUID(),
         type: "sticky",
         comment: "",
         x: 20 + Math.random() * 100,
         y: 80 + Math.random() * 80,
-        color: color,
+        styleId: styleId,
         createdAt: Date.now()
       };
       if (!state.currentDiary.annotations) state.currentDiary.annotations = [];
       state.currentDiary.annotations.push(annot);
+      // 直接在页面上添加便签 DOM，不重新渲染整个页面
+      var body = pageEl.querySelector(".dms-page-body");
+      if (body) {
+        body.appendChild(makeStickyNote(annot, pageEl));
+      }
       saveCurrentDiary();
-      renderContent();
     }
 
+    /* 10款内置便签样式配置 */
+    var STICKY_STYLES = [
+      { id: 0, name: "暖黄", color: "#FFE4A0", css: "note-0" },
+      { id: 1, name: "樱粉", color: "#FFCDD2", css: "note-1" },
+      { id: 2, name: "嫩绿", color: "#C8E6C9", css: "note-2" },
+      { id: 3, name: "天蓝", color: "#BBDEFB", css: "note-3" },
+      { id: 4, name: "米黄", color: "#FFF9C4", css: "note-4" },
+      { id: 5, name: "桃红", color: "#F8BBD0", css: "note-5" },
+      { id: 6, name: "薰衣草", color: "#D1C4E9", css: "note-6" },
+      { id: 7, name: "珊瑚", color: "#FFCCBC", css: "note-7" },
+      { id: 8, name: "薄荷", color: "#B2DFDB", css: "note-8" },
+      { id: 9, name: "柠香", color: "#F0F4C3", css: "note-9" }
+    ];
+
     function makeStickyNote(annot, pageEl) {
-      var sticky = el("div", {
-        class: "dms-sticky",
-        style: { left: annot.x + "px", top: annot.y + "px", background: annot.color || "#FFE4A0" }
+      var styleId = annot.styleId != null ? annot.styleId : 0;
+      var styleConfig = STICKY_STYLES[styleId] || STICKY_STYLES[0];
+      var stickyClass = "dms-sticky " + styleConfig.css;
+      var stickyStyle = { left: annot.x + "px", top: annot.y + "px" };
+      // 自定义颜色覆盖
+      if (annot.customColor) stickyStyle.background = annot.customColor;
+      // 自定义字体
+      if (annot.customFont) stickyStyle.fontFamily = annot.customFont;
+      // 自定义字体颜色
+      if (annot.customTextColor) stickyStyle.color = annot.customTextColor;
+
+      var sticky = el("div", { class: stickyClass, style: stickyStyle });
+      var text = el("div", { contentEditable: annot.byChar ? "false" : "true", style: { outline: "none", minHeight: "20px" } }, [annot.comment || (annot.byChar ? "" : "\u53cc\u51fb\u7f16\u8f91\u2026")]);
+      if (!annot.byChar) {
+        text.addEventListener("blur", function () {
+          annot.comment = text.textContent;
+          saveCurrentDiary();
+        });
+      }
+      var removeBtn = null;
+      if (!annot.byChar) {
+        removeBtn = el("button", { class: "dms-sticky-remove", onclick: function (ev) {
+          ev.stopPropagation();
+          // 先在 annotations 里找，再到 charAnnotations 里找
+          var arr = state.currentDiary.annotations;
+          var i = arr.indexOf(annot);
+          if (i >= 0) { arr.splice(i, 1); }
+          else if (state.currentDiary.charAnnotations) {
+            var j = state.currentDiary.charAnnotations.indexOf(annot);
+            if (j >= 0) state.currentDiary.charAnnotations.splice(j, 1);
+          }
+          saveCurrentDiary();
+          sticky.remove();
+        } }, ["\u00d7"]);
+      }
+
+      // 长按（或右键）显示样式选择器
+      var styleTimer = null;
+      sticky.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+        showStickyStylePicker(annot, sticky);
       });
-      var text = el("div", { contentEditable: "true", style: { outline: "none", minHeight: "20px" } }, [annot.comment || "\u53cc\u51fb\u7f16\u8f91\u2026"]);
-      text.addEventListener("blur", function () {
-        annot.comment = text.textContent;
-        saveCurrentDiary();
+      // 移动端长按
+      sticky.addEventListener("touchstart", function (e) {
+        if (e.target === text || e.target === removeBtn) return;
+        styleTimer = setTimeout(function () {
+          showStickyStylePicker(annot, sticky);
+        }, 600);
       });
-      var removeBtn = el("button", { class: "dms-sticky-remove", onclick: function (ev) {
-        ev.stopPropagation();
-        var arr = state.currentDiary.annotations;
-        var i = arr.indexOf(annot);
-        if (i >= 0) arr.splice(i, 1);
-        saveCurrentDiary();
-        sticky.remove();
-      } }, ["\u00d7"]);
+      sticky.addEventListener("touchmove", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
+      sticky.addEventListener("touchend", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
 
       var dragging = false, offsetX = 0, offsetY = 0;
       sticky.addEventListener("pointerdown", function (e) {
@@ -1679,18 +1762,124 @@
       });
       sticky.addEventListener("pointerup", function () { if (dragging) { dragging = false; saveCurrentDiary(); } });
 
+      // char 写的便签加标记
+      if (annot.byChar) {
+        sticky.appendChild(el("div", {
+          style: { position: "absolute", top: "-2px", left: "-2px", fontSize: "8px", color: "#FAF3E3", background: "var(--red)", borderRadius: "3px", padding: "0 3px" }
+        }, ["TA"]));
+      }
+
       sticky.appendChild(text);
-      sticky.appendChild(removeBtn);
+      if (removeBtn) sticky.appendChild(removeBtn);
       return sticky;
+    }
+
+    /* ---------- 便签样式选择器（长按/右键触发） ---------- */
+    function showStickyStylePicker(annot, stickyEl) {
+      var old = qs(".dms-sticky-style-popup", document);
+      if (old) old.remove();
+      var popup = el("div", {
+        class: "dms-sticker-picker dms-sticky-style-popup",
+        style: { position: "fixed", zIndex: "600", maxWidth: "300px" }
+      });
+      popup.appendChild(el("div", { class: "dms-sticker-picker-head" }, [
+        el("span", { style: { fontSize: "12px", color: "var(--ink-mute)" } }, ["\u9009\u4fbf\u7b7e\u6837\u5f0f"]),
+        el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { popup.remove(); } }, ["\u5173\u95ed"])
+      ]));
+      // 10 款样式选择
+      var styleGrid = el("div", { class: "dms-sticky-style-picker" });
+      STICKY_STYLES.forEach(function (st) {
+        var item = el("div", {
+          class: "dms-sticky-style-item" + (annot.styleId === st.id ? " active" : ""),
+          style: { background: st.color },
+          title: st.name,
+          onclick: function () {
+            annot.styleId = st.id;
+            annot.customColor = null; // 选内置样式时清除自定义颜色
+            stickyEl.className = "dms-sticky " + st.css;
+            stickyEl.style.background = "";
+            saveCurrentDiary();
+            popup.remove();
+          }
+        });
+        styleGrid.appendChild(item);
+      });
+      popup.appendChild(styleGrid);
+
+      // 自定义颜色
+      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u81ea\u5b9a\u4e49\u989c\u8272"]));
+      var colorInput = el("input", {
+        type: "color", value: annot.customColor || "#FFE4A0",
+        style: { width: "100%", height: "30px", marginTop: "4px" },
+        oninput: function () {
+          annot.customColor = this.value;
+          stickyEl.style.background = this.value;
+        }
+      });
+      popup.appendChild(colorInput);
+
+      // 自定义字体颜色
+      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u5b57\u4f53\u989c\u8272"]));
+      var textColorInput = el("input", {
+        type: "color", value: annot.customTextColor || "#3a2818",
+        style: { width: "100%", height: "30px", marginTop: "4px" },
+        oninput: function () {
+          annot.customTextColor = this.value;
+          stickyEl.style.color = this.value;
+        }
+      });
+      popup.appendChild(textColorInput);
+
+      // 自定义字体（URL 导入）
+      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u5b57\u4f53 URL\uff08\u53ef\u9009\uff09"]));
+      var fontInput = el("input", {
+        type: "text", placeholder: "https://fonts.googleapis.com/...",
+        value: annot.customFontUrl || "",
+        style: { width: "100%", padding: "4px 8px", fontSize: "11px", marginTop: "4px", border: "1px solid var(--line)", borderRadius: "4px" },
+        oninput: function () { annot.customFontUrl = this.value; }
+      });
+      popup.appendChild(fontInput);
+      popup.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-primary",
+        style: { marginTop: "4px", width: "100%" },
+        onclick: function () {
+          if (annot.customFontUrl) {
+            // 动态加载字体
+            var fontName = "customFont" + Date.now();
+            var css = "@font-face{font-family:'" + fontName + "';src:url('" + annot.customFontUrl + "');}";
+            var styleEl = document.createElement("style");
+            styleEl.textContent = css;
+            document.head.appendChild(styleEl);
+            annot.customFont = "'" + fontName + "',cursive";
+            stickyEl.style.fontFamily = annot.customFont;
+            saveCurrentDiary();
+            toast("\u5b57\u4f53\u5df2\u52a0\u8f7d");
+          }
+          popup.remove();
+        }
+      }, ["\u52a0\u8f7d\u5b57\u4f53"]));
+
+      // 定位到便签附近
+      var rect = stickyEl.getBoundingClientRect();
+      popup.style.left = Math.min(rect.left, window.innerWidth - 320) + "px";
+      popup.style.top = (rect.bottom + 4) + "px";
+      document.body.appendChild(popup);
+      setTimeout(function () {
+        document.addEventListener("mousedown", function close(ev) {
+          if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("mousedown", close); }
+        });
+      }, 0);
     }
 
     /* ---------- 表情包贴纸（贴到日记上） ---------- */
     function makeSticker(s, pageEl) {
+      var size = s.size || 64;
       var sticker = el("div", {
         class: "dms-sticker",
-        style: { left: (s.x || 30) + "px", top: (s.y || 60) + "px" }
+        style: { left: (s.x || 30) + "px", top: (s.y || 60) + "px", width: size + "px", height: size + "px" }
       });
-      sticker.appendChild(el("img", { src: s.url, alt: s.caption || "" }));
+      var img = el("img", { src: s.url, alt: s.caption || "", style: { width: "100%", height: "100%" } });
+      sticker.appendChild(img);
       if (s.caption) {
         sticker.appendChild(el("div", { class: "dms-sticker-cap" }, [s.caption]));
       }
@@ -1713,9 +1902,31 @@
       } }, ["\u00d7"]);
       sticker.appendChild(delBtn);
 
+      // 缩放手柄（右下角）
+      var resizeHandle = el("div", {
+        class: "dms-sticker-resize",
+        style: {
+          position: "absolute", right: "-4px", bottom: "-4px",
+          width: "12px", height: "12px", background: "var(--blue)",
+          borderRadius: "50%", cursor: "nwse-resize", zIndex: "10",
+          border: "1px solid #FAF3E3"
+        }
+      });
+      sticker.appendChild(resizeHandle);
+
       var dragging = false, offsetX = 0, offsetY = 0;
+      var resizing = false, startW = 0, startH = 0, startX = 0, startY = 0;
       sticker.addEventListener("pointerdown", function (e) {
         if (e.target === delBtn) return;
+        if (e.target === resizeHandle) {
+          resizing = true;
+          startW = sticker.offsetWidth;
+          startH = sticker.offsetHeight;
+          startX = e.clientX;
+          startY = e.clientY;
+          sticker.setPointerCapture(e.pointerId);
+          return;
+        }
         dragging = true;
         offsetX = e.clientX - sticker.offsetLeft;
         offsetY = e.clientY - sticker.offsetTop;
@@ -1723,14 +1934,22 @@
         sticker.style.cursor = "grabbing";
       });
       sticker.addEventListener("pointermove", function (e) {
-        if (!dragging) return;
-        s.x = e.clientX - offsetX;
-        s.y = e.clientY - offsetY;
-        sticker.style.left = s.x + "px";
-        sticker.style.top = s.y + "px";
+        if (resizing) {
+          var newW = Math.max(32, startW + (e.clientX - startX));
+          var newH = Math.max(32, startH + (e.clientY - startY));
+          sticker.style.width = newW + "px";
+          sticker.style.height = newH + "px";
+          s.size = newW;
+        } else if (dragging) {
+          s.x = e.clientX - offsetX;
+          s.y = e.clientY - offsetY;
+          sticker.style.left = s.x + "px";
+          sticker.style.top = s.y + "px";
+        }
       });
       sticker.addEventListener("pointerup", function () {
         if (dragging) { dragging = false; sticker.style.cursor = "grab"; saveCurrentDiary(); }
+        if (resizing) { resizing = false; saveCurrentDiary(); }
       });
       return sticker;
     }
@@ -1770,13 +1989,18 @@
               caption: st.caption || "",
               x: 30 + Math.random() * 120,
               y: 60 + Math.random() * 80,
+              size: 64,
               blockId: null,
               createdAt: Date.now()
             };
             state.currentDiary.stickers.push(placed);
+            // 直接在页面上添加贴纸 DOM，不重新渲染整个页面
+            var body = pageEl.querySelector(".dms-page-body");
+            if (body) {
+              body.appendChild(makeSticker(placed, pageEl));
+            }
             saveCurrentDiary();
             picker.remove();
-            renderContent();
           });
           grid.appendChild(pick);
         });
@@ -1920,6 +2144,83 @@
       });
       sec5.appendChild(ml);
       body.appendChild(sec5);
+
+      // 便签默认样式
+      var secSticky = el("div", { class: "dms-settings-section" }, [
+        el("h3", {}, ["\u4fbf\u7b7e\u9ed8\u8ba4\u6837\u5f0f"]),
+        el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["\u4e3a\u81ea\u5df1\u548c TA \u5206\u522b\u9009\u4e00\u6b3e\u9ed8\u8ba4\u4fbf\u7b7e\uff0c\u4e0d\u9009\u5219\u968f\u673a\u3002\u00b7\u957f\u6309/\u53f3\u952e\u5355\u4e2a\u4fbf\u7b7e\u8fd8\u53ef\u81ea\u5b9a\u4e49\u989c\u8272\u548c\u5b57\u4f53\u3002"])
+      ]);
+
+      // user 自己的默认便签
+      secSticky.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink)", fontWeight: "600", marginBottom: "4px" } }, ["\u6211\u7684\u9ed8\u8ba4\u4fbf\u7b7e"]));
+      var userStyleRow = el("div", { class: "dms-sticky-style-picker", style: { marginBottom: "10px" } });
+      function setActiveInRow(row, getValue) {
+        var items = row.querySelectorAll(".dms-sticky-style-item");
+        items.forEach(function (it) {
+          var itVal = it.getAttribute("data-sid");
+          var cur = getValue();
+          var isActive = (itVal === "null" && cur == null) || (itVal !== "null" && Number(itVal) === cur);
+          if (isActive) it.classList.add("active"); else it.classList.remove("active");
+        });
+      }
+      // "随机" 选项
+      var randUserItem = el("div", {
+        class: "dms-sticky-style-item" + (state.settings.defaultStickyStyle == null ? " active" : ""),
+        title: "\u968f\u673a",
+        "data-sid": "null",
+        style: { background: "linear-gradient(135deg,#FFE4A0,#FFCDD2,#C8E6C9,#BBDEFB)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", color: "#5a4632" },
+        onclick: function () {
+          state.settings.defaultStickyStyle = null;
+          saveSettings(roche, state.settings);
+          setActiveInRow(userStyleRow, function () { return state.settings.defaultStickyStyle; });
+        }
+      }, ["\u2685"]);
+      userStyleRow.appendChild(randUserItem);
+      STICKY_STYLES.forEach(function (st) {
+        userStyleRow.appendChild(el("div", {
+          class: "dms-sticky-style-item" + (state.settings.defaultStickyStyle === st.id ? " active" : ""),
+          "data-sid": String(st.id),
+          style: { background: st.color },
+          title: st.name,
+          onclick: function () {
+            state.settings.defaultStickyStyle = st.id;
+            saveSettings(roche, state.settings);
+            setActiveInRow(userStyleRow, function () { return state.settings.defaultStickyStyle; });
+          }
+        }));
+      });
+      secSticky.appendChild(userStyleRow);
+
+      // char 的默认便签
+      secSticky.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink)", fontWeight: "600", marginBottom: "4px" } }, ["TA \u7ed9\u6211\u5199\u4fbf\u7b7e\u65f6\u4f7f\u7528"]));
+      var charStyleRow = el("div", { class: "dms-sticky-style-picker", style: { marginBottom: "6px" } });
+      var randCharItem = el("div", {
+        class: "dms-sticky-style-item" + (state.settings.defaultCharStickyStyle == null ? " active" : ""),
+        title: "\u968f\u673a\u5faa\u73af",
+        "data-sid": "null",
+        style: { background: "linear-gradient(135deg,#FFE4A0,#FFCDD2,#C8E6C9,#BBDEFB)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", color: "#5a4632" },
+        onclick: function () {
+          state.settings.defaultCharStickyStyle = null;
+          saveSettings(roche, state.settings);
+          setActiveInRow(charStyleRow, function () { return state.settings.defaultCharStickyStyle; });
+        }
+      }, ["\u2685"]);
+      charStyleRow.appendChild(randCharItem);
+      STICKY_STYLES.forEach(function (st) {
+        charStyleRow.appendChild(el("div", {
+          class: "dms-sticky-style-item" + (state.settings.defaultCharStickyStyle === st.id ? " active" : ""),
+          "data-sid": String(st.id),
+          style: { background: st.color },
+          title: st.name,
+          onclick: function () {
+            state.settings.defaultCharStickyStyle = st.id;
+            saveSettings(roche, state.settings);
+            setActiveInRow(charStyleRow, function () { return state.settings.defaultCharStickyStyle; });
+          }
+        }));
+      });
+      secSticky.appendChild(charStyleRow);
+      body.appendChild(secSticky);
 
       // 表情包库
       var sec6 = el("div", { class: "dms-settings-section" }, [
@@ -2297,13 +2598,91 @@
       });
     }
 
-    /* ---------- 交换模式：带 user 日记参考生成 char 日记 ---------- */
+    /* ---------- 交换模式：带 user 日记参考生成 char 日记 + 并行给 user 贴便签 ---------- */
     function generateCharDiaryWithUserRef(roche, ctx, settings, userDiaryText) {
       var msgs = buildCharDiaryMessages(ctx, settings);
       // 在最后追加 user 的日记作为参考
-      msgs.push({ role: "assistant", content: "\u3010" + (ctx.userName || "\u7528\u6237") + "\u521a\u5199\u7684\u65e5\u8bb0\u3011\n" + userDiaryText + "\n\n\u8bf7\u5728\u4f60\u7684\u65e5\u8bb0\u4e2d\u56de\u5e94/{}\u5bf9\u8bdd TA \u7684\u65e5\u8bb0\u3002".replace("{}", "") });
-      msgs.push({ role: "user", content: "\u73b0\u5728\u8bf7\u4f60\u5199\u4f60\u7684\u65e5\u8bb0\u3002" });
-      return callAI(roche, msgs, 0.7);
+      msgs.push({ role: "assistant", content: "\u3010" + (ctx.userName || "\u7528\u6237") + "\u521a\u5199\u7684\u65e5\u8bb0\u3011\n" + userDiaryText + "\n\n\u8bf7\u5728\u4f60\u7684\u65e5\u8bb0\u4e2d\u56de\u5e94\u5bf9\u8bdd TA \u7684\u65e5\u8bb0\u3002" });
+      msgs.push({ role: "user", content:
+        "\u73b0\u5728\u8bf7\u4f60\u5199\u4f60\u7684\u65e5\u8bb0\u3002\n\n" +
+        "\u540c\u65f6\uff0c\u8bf7\u4f60\u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u7ed9 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u8d34\u4e0a 4~6 \u5f20\u4fbf\u7b7e\u3002\n" +
+        "\u4fbf\u7b7e\u8981\u6c42\uff1a\n" +
+        "1. \u9009\u62e9\u4f60\u6709\u611f\u89c9\u7684\u6bb5\u843d\u6216\u53e5\u5b50\uff0c\u7559\u4e0b\u4f60\u7684\u60f3\u6cd5\u3001\u611f\u53d7\u6216\u8c03\u76ae\u3002\n" +
+        "2. \u4fbf\u7b7e\u5185\u5bb9\u8981\u7b26\u5408 " + (ctx.charName || "\u89d2\u8272") + " \u7684\u4eba\u8bbe\u53e3\u543b\u3002\n" +
+        "3. \u8f93\u51fa\u683c\u5f0f\uff08\u4e25\u683c\u9075\u5b88\uff09\uff1a\n" +
+        "\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011\n" +
+        "\u5185\u5bb9\u4e00\n" +
+        "\u5185\u5bb9\u4e8c\n" +
+        "...\n" +
+        "\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011\n\n" +
+        "\u6ce8\u610f\uff1a\u4fbf\u7b7e\u5185\u5bb9\u5355\u72ec\u6210\u884c\uff0c\u4e0d\u8981\u548c\u65e5\u8bb0\u6df7\u5728\u4e00\u8d77\u3002\u65e5\u8bb0\u548c\u4fbf\u7b7e\u90fd\u7528\u4e0a\u9762\u7684\u6807\u8bb0\u5206\u9694\u3002"
+      });
+      return callAI(roche, msgs, 0.7).then(function (text) {
+        // 解析 AI 输出，分离 char 日记和 char 给 user 的便签
+        var parsed = parseCharDiaryAndStickyNotes(text);
+        // 如果解析出了便签，保存到 charAnnotations
+        if (parsed.stickyNotes.length > 0) {
+          if (!state.currentDiary) state.currentDiary = {};
+          // char 便签默认样式：优先用 user 给 char 挂载的默认样式，否则在 10 款中循环分配
+          var charDefaultStyle = state.settings.defaultCharStickyStyle;
+          state.currentDiary.charAnnotations = (state.currentDiary.charAnnotations || []).concat(
+            parsed.stickyNotes.map(function (note, idx) {
+              var sid = (charDefaultStyle != null) ? charDefaultStyle : (idx % 10);
+              return {
+                id: "charNote" + Date.now() + "_" + idx,
+                type: "sticky",
+                comment: note,
+                x: 20 + (idx * 60) + Math.random() * 40,
+                y: 60 + (idx * 80) + Math.random() * 40,
+                styleId: sid,
+                byChar: true,
+                createdAt: Date.now()
+              };
+            })
+          );
+        }
+        return parsed.diary;
+      });
+    }
+
+    /* ---------- 解析 char 输出：分离日记和便签 ---------- */
+    function parseCharDiaryAndStickyNotes(text) {
+      if (!text) return { diary: "", stickyNotes: [] };
+      var diary = text;
+      var stickyNotes = [];
+
+      // 尝试提取【便签开始】...【便签结束】
+      var stickyRe = /\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011([\s\S]*?)\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011/g;
+      var m;
+      while ((m = stickyRe.exec(text)) !== null) {
+        var content = m[1].trim();
+        // 每行作为单独便签
+        content.split("\n").forEach(function (line) {
+          line = line.trim();
+          if (line) stickyNotes.push(line);
+        });
+      }
+      // 从日记中移除便签部分
+      diary = text.replace(stickyRe, "").trim();
+      // 如果没找到便签标记，尝试另一种格式：以【便签】开头的行
+      if (stickyNotes.length === 0) {
+        var lines = text.split("\n");
+        var diaryLines = [];
+        lines.forEach(function (line) {
+          var sm = line.match(/^\u3010\u4fbf\u7b7e\u3011\s*(.*)$/);
+          if (sm) {
+            if (sm[1].trim()) stickyNotes.push(sm[1].trim());
+          } else {
+            diaryLines.push(line);
+          }
+        });
+        if (stickyNotes.length > 0) diary = diaryLines.join("\n").trim();
+      }
+
+      // 限制 4-6 条
+      if (stickyNotes.length > 6) stickyNotes = stickyNotes.slice(0, 6);
+
+      return { diary: diary, stickyNotes: stickyNotes };
     }
 
     /* ---------- 同步选项对话框（生成后弹出） ---------- */
@@ -2453,25 +2832,68 @@
       });
     }
 
-    /* ---------- 通过 RocheToolkit 把交换日记作为系统消息注入主聊天 ---------- */
-    // 把 char 日记分块、user 的便签/表情包贴纸、彼此的批注整理成一条系统消息注入主聊天
+    /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为系统消息注入主聊天 ---------- */
     function syncShortTerm(roche, ctx, diary) {
       if (!diary) return Promise.resolve();
       var cid = ctx && ctx.conversationId;
       var text = buildShortTermInjectText(diary);
-      if (!text) return Promise.resolve();
-      // 优先用 RocheToolkit.simulateSystemNotice 注入系统消息
-      if (window.RocheToolkit && typeof window.RocheToolkit.simulateSystemNotice === "function") {
+      if (!text) { console.warn("[DMS] syncShortTerm: empty text"); return Promise.resolve(); }
+      console.log("[DMS] syncShortTerm start, cid=", cid, "text length=", text.length);
+
+      // 优先用 RocheToolkit.simulateSystemNotice
+      var tk = window.RocheToolkit || (window.parent && window.parent.RocheToolkit) || (window.top && window.top.RocheToolkit);
+      if (tk && typeof tk.simulateSystemNotice === "function") {
+        console.log("[DMS] using RocheToolkit.simulateSystemNotice");
         try {
-          var r = window.RocheToolkit.simulateSystemNotice(cid, text, "diary");
-          return Promise.resolve(r).catch(function (e) { console.error("[DMS] simulateSystemNotice fail", e); });
+          return Promise.resolve(tk.simulateSystemNotice(cid, text, "diary")).then(function (id) {
+            console.log("[DMS] simulateSystemNotice OK, id=", id);
+          }).catch(function (e) { console.error("[DMS] simulateSystemNotice fail", e); });
         } catch (e) { console.error("[DMS] simulateSystemNotice throw", e); }
       }
-      // 回退：写入短期记忆 API
-      if (roche.memory && roche.memory.writeShortTerm) {
-        return roche.memory.writeShortTerm({ conversationId: cid, content: text }).catch(function () {});
-      }
-      return Promise.resolve();
+
+      // 回退：直接操作 IndexedDB（与 RocheToolkit 相同的逻辑）
+      console.log("[DMS] RocheToolkit not found, direct IndexedDB inject");
+      return injectMessageToIndexedDB(cid, text).then(function (id) {
+        console.log("[DMS] IndexedDB inject OK, id=", id);
+      }).catch(function (e) {
+        console.error("[DMS] IndexedDB inject fail", e);
+        toast("\u77ed\u671f\u8bb0\u5fc6\u6ce8\u5165\u5931\u8d25\uff1a" + (e && e.message || e));
+      });
+    }
+
+    /* ---------- 直接操作 IndexedDB 注入系统消息 ---------- */
+    function injectMessageToIndexedDB(conversationId, text) {
+      return new Promise(function (resolve, reject) {
+        var req = indexedDB.open("Roche_db");
+        req.onsuccess = function () {
+          var db = req.result;
+          try {
+            var tx = db.transaction("messages", "readwrite");
+            var store = tx.objectStore("messages");
+            var now = Date.now();
+            var msg = {
+              id: now + Math.floor(Math.random() * 1000),
+              isMe: false,
+              text: text,
+              type: "system_notice",
+              timestamp: now,
+              conversationId: conversationId,
+              senderId: "__system__",
+              senderName: "System"
+            };
+            var addReq = store.add(msg);
+            addReq.onsuccess = function () { resolve(addReq.result); };
+            addReq.onerror = function () { reject(addReq.error); };
+            tx.oncomplete = function () { db.close(); };
+            tx.onerror = function () { db.close(); };
+            tx.onabort = function () { db.close(); };
+          } catch (e) {
+            db.close();
+            reject(e);
+          }
+        };
+        req.onerror = function () { reject(req.error); };
+      });
     }
 
     /* ---------- 拼装短期记忆注入文本（按分块联动便签/贴纸） ---------- */

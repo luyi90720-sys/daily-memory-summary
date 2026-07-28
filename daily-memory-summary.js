@@ -459,6 +459,21 @@
     style.textContent = [
       "@import url('https://fonts.googleapis.com/css2?family=Ma+Shan+Zheng&family=Noto+Serif+SC:wght@400;600;700&display=swap');",
       "",
+      "/* ===== 全局变量（保证挂在 body 上的弹窗也能拿到）===== */",
+      ":root.dms-vars{",
+      "  --paper:#FAF3E3; --paper-2:#F5EDD0; --paper-3:#EDE0C8;",
+      "  --line:rgba(180,160,110,0.25);",
+      "  --ink:#4A3C28; --ink-dim:#7A6A50; --ink-mute:#B0A080;",
+      "  --red:#C44536; --blue:#3A6B8A; --green:#7B8F5C; --purple:#8B5E83;",
+      "  --tape-pink:rgba(232,160,160,0.65); --tape-blue:rgba(160,196,232,0.65);",
+      "  --tape-green:rgba(196,232,160,0.65); --tape-yellow:rgba(232,210,160,0.65);",
+      "  --shadow:0 2px 12px rgba(74,60,40,0.12);",
+      "  --shadow-strong:0 4px 20px rgba(74,60,40,0.2);",
+      "  --radius:6px; --radius-sm:4px;",
+      "  --font-serif:'Noto Serif SC','Songti SC','STSong',serif;",
+      "  --font-hand:'Ma Shan Zheng','Noto Serif SC',serif;",
+      "}",
+      "",
       "/* ===== 手账本主容器 ===== */",
       "." + ROOT_CLASS + "{",
       "  --paper:#FAF3E3; --paper-2:#F5EDD0; --paper-3:#EDE0C8;",
@@ -478,6 +493,58 @@
       "    var(--paper);",
       "  padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);",
       "}",
+      "",
+      "/* ===== 弹窗组件全局样式（挂在 body 上，不依赖 ROOT_CLASS）===== */",
+      ".dms-sticker-picker.dms-float, .dms-sticky-style-popup.dms-float, .dms-annot-menu.dms-float, .dms-sync-overlay.dms-float, .dms-mount-dialog.dms-float, .dms-toast.dms-float{",
+      "  color:var(--ink);font-family:var(--font-serif);box-sizing:border-box;",
+      "}",
+      ".dms-sticker-picker.dms-float{",
+      "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "}",
+      ".dms-sticky-style-popup.dms-float{",
+      "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "}",
+      ".dms-annot-menu.dms-float{",
+      "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "  padding:8px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;",
+      "}",
+      ".dms-sync-overlay.dms-float{",
+      "  background:rgba(74,60,40,0.45);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);",
+      "  display:flex;align-items:center;justify-content:center;padding:16px;",
+      "}",
+      ".dms-sync-overlay.dms-float .dms-card{",
+      "  background:var(--paper);border-radius:var(--radius);box-shadow:var(--shadow-strong);padding:18px;max-width:420px;width:92%;max-height:85vh;overflow-y:auto;",
+      "  border:1px solid var(--line);",
+      "}",
+      ".dms-mount-dialog.dms-float{",
+      "  background:var(--paper);border-radius:var(--radius);box-shadow:var(--shadow-strong);padding:16px;",
+      "  border:1px solid var(--line);color:var(--ink);",
+      "}",
+      ".dms-toast.dms-float{",
+      "  background:rgba(74,60,40,0.92);color:var(--paper);padding:8px 14px;border-radius:var(--radius-sm);",
+      "  font-size:12px;font-family:var(--font-serif);box-shadow:var(--shadow-strong);",
+      "}",
+      ".dms-float .dms-btn{",
+      "  font-family:var(--font-serif);cursor:pointer;border-radius:var(--radius-sm);transition:all .15s ease;",
+      "}",
+      ".dms-float .dms-btn-primary{background:var(--red);color:#FAF3E3;border:1px solid var(--red);padding:6px 12px;font-size:12px;}",
+      ".dms-float .dms-btn-primary:hover{filter:brightness(1.05);}",
+      ".dms-float .dms-btn-ghost{background:transparent;color:var(--ink);border:1px solid var(--line);padding:6px 12px;font-size:12px;}",
+      ".dms-float .dms-btn-ghost:hover{background:var(--paper-2);}",
+      ".dms-float .dms-btn-sm{padding:4px 8px;font-size:11px;}",
+      ".dms-float .dms-tool-btn{",
+      "  background:var(--paper-2);color:var(--ink);border:1px solid var(--line);padding:6px 10px;font-size:12px;",
+      "  border-radius:var(--radius-sm);cursor:pointer;font-family:var(--font-serif);",
+      "}",
+      ".dms-float .dms-tool-btn:hover{background:var(--paper-3);border-color:var(--red);color:var(--red);}",
+      ".dms-float .dms-textarea, .dms-float .dms-annot-input{",
+      "  font-family:var(--font-serif);color:var(--ink);background:var(--paper-2);",
+      "  border:1px solid var(--line);border-radius:var(--radius-sm);padding:8px 10px;font-size:13px;outline:none;width:100%;",
+      "}",
+      ".dms-float .dms-textarea:focus, .dms-float .dms-annot-input:focus{border-color:var(--red);}",
+      ".dms-float .dms-hint{color:var(--ink-mute);font-size:11px;line-height:1.5;}",
+      ".dms-float .dms-page-title{font-size:15px;font-weight:600;color:var(--ink);}",
+      ".dms-float h3{font-size:14px;font-weight:600;color:var(--ink);margin:0 0 8px 0;}",
       "." + ROOT_CLASS + " *{box-sizing:border-box;margin:0;padding:0;}",
       "." + ROOT_CLASS + " .dms-handwritten{font-family:'Ma Shan Zheng','KaiTi','STKaiti',cursive;}",
       "",
@@ -767,7 +834,7 @@
       "." + ROOT_CLASS + " .dms-sticky{",
       "  position:absolute;z-index:5;max-width:180px;min-width:80px;padding:10px 12px;font-size:12px;",
       "  color:var(--ink);box-shadow:2px 3px 8px rgba(74,60,40,0.2);",
-      "  border-radius:2px;cursor:move;line-height:1.5;",
+      "  border-radius:2px;cursor:move;line-height:1.5;touch-action:none;",
       "  transform:rotate(-1deg);font-family:'Ma Shan Zheng','KaiTi',cursive;",
       "  word-wrap:break-word;word-break:break-word;",
       "}",
@@ -831,7 +898,7 @@
       "." + ROOT_CLASS + " .dms-sticker-cell:hover .dms-sticker-cell-del{display:block;}",
       "",
       "/* ===== 日记贴纸（贴到日记上的表情包）===== */",
-      "." + ROOT_CLASS + " .dms-sticker{position:absolute;width:64px;height:64px;cursor:grab;z-index:6;user-select:none;}",
+      "." + ROOT_CLASS + " .dms-sticker{position:absolute;width:64px;height:64px;cursor:grab;z-index:6;user-select:none;touch-action:none;}",
       "." + ROOT_CLASS + " .dms-sticker img{width:100%;height:100%;object-fit:contain;pointer-events:none;}",
       "." + ROOT_CLASS + " .dms-sticker-cap{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--ink-mute);background:var(--paper);padding:0 4px;border-radius:3px;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis;}",
       "." + ROOT_CLASS + " .dms-sticker-del{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#FAF3E3;font-size:10px;border:none;cursor:pointer;opacity:0;transition:opacity .15s ease;}",
@@ -1412,6 +1479,7 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
+          el("button", { class: "dms-tool-btn", title: "\u9009\u4e2d\u6587\u5b57\u540e\u5f39\u51fa\u6279\u6ce8\u83dc\u5355", onclick: function () { toast("\u8bf7\u5728 TA \u7684\u65e5\u8bb0\u4e0a\u9009\u4e2d\u60f3\u6279\u6ce8\u7684\u6587\u5b57"); } }, ["\u6279\u6ce8"]),
           el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
           el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"])
         ])
@@ -1710,7 +1778,7 @@
     function showAnnotMenu(selectedText, range, pageEl) {
       hideAnnotMenu();
       var rect = range.getBoundingClientRect();
-      var menu = el("div", { class: "dms-annot-menu", style: {
+      var menu = el("div", { class: "dms-annot-menu dms-float", style: {
         left: (rect.left + rect.width / 2) + "px",
         top: (rect.bottom + window.scrollY + 6) + "px",
         transform: "translateX(-50%)"
@@ -1867,16 +1935,40 @@
       sticky.addEventListener("touchmove", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
       sticky.addEventListener("touchend", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
 
-      var dragging = false, offsetX = 0, offsetY = 0;
+      var dragging = false, offsetX = 0, offsetY = 0, startX = 0, startY = 0, moved = false;
+      // 计算便签中心 y 吸附到哪个段落，写入 blockId
+      function updateBlockIdByPosition() {
+        var body = pageEl.querySelector(".dms-page-body");
+        if (!body) return;
+        var blocks = body.querySelectorAll(".dms-block");
+        if (!blocks.length) return;
+        var stickyRect = sticky.getBoundingClientRect();
+        var cy = stickyRect.top + stickyRect.height / 2;
+        var best = null, bestDist = Infinity;
+        blocks.forEach(function (b) {
+          var r = b.getBoundingClientRect();
+          if (cy >= r.top && cy <= r.bottom) { best = b; bestDist = 0; }
+          else {
+            var d = Math.min(Math.abs(cy - r.top), Math.abs(cy - r.bottom));
+            if (d < bestDist) { bestDist = d; best = b; }
+          }
+        });
+        if (best) {
+          annot.blockId = best.getAttribute("data-block-id") || null;
+        }
+      }
       sticky.addEventListener("pointerdown", function (e) {
         if (e.target === text || e.target === removeBtn) return;
-        dragging = true;
+        if (e.pointerType === "touch") return; // 触摸走 touch 事件
+        dragging = true; moved = false;
+        startX = e.clientX; startY = e.clientY;
         offsetX = e.clientX - sticky.offsetLeft;
         offsetY = e.clientY - sticky.offsetTop;
-        sticky.setPointerCapture(e.pointerId);
+        try { sticky.setPointerCapture(e.pointerId); } catch (_) {}
       });
       sticky.addEventListener("pointermove", function (e) {
         if (!dragging) return;
+        if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
         var body = pageEl.querySelector(".dms-page-body");
         if (!body) return;
         var rect = body.getBoundingClientRect();
@@ -1887,7 +1979,55 @@
         sticky.style.left = annot.x + "px";
         sticky.style.top = annot.y + "px";
       });
-      sticky.addEventListener("pointerup", function () { if (dragging) { dragging = false; saveCurrentDiary(); } });
+      sticky.addEventListener("pointerup", function () {
+        if (dragging) {
+          dragging = false;
+          if (moved) { updateBlockIdByPosition(); saveCurrentDiary(); }
+        }
+      });
+      sticky.addEventListener("pointercancel", function () { dragging = false; });
+
+      // 触摸事件（移动端专用，更流畅）
+      var touchDragging = false, touchOffsetX = 0, touchOffsetY = 0;
+      sticky.addEventListener("touchstart", function (e) {
+        if (e.target === text || e.target === removeBtn) return;
+        if (e.touches.length !== 1) return;
+        var t = e.touches[0];
+        var stickyRect = sticky.getBoundingClientRect();
+        var body = pageEl.querySelector(".dms-page-body");
+        var bodyRect = body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+        touchDragging = true; moved = false;
+        startX = t.clientX; startY = t.clientY;
+        touchOffsetX = t.clientX - bodyRect.left - annot.x;
+        touchOffsetY = t.clientY - bodyRect.top - annot.y;
+        // 不阻止默认，让长按检测继续工作（styleTimer 在 touchstart 已启动）
+      }, { passive: true });
+      sticky.addEventListener("touchmove", function (e) {
+        if (!touchDragging || e.touches.length !== 1) return;
+        var t = e.touches[0];
+        if (Math.abs(t.clientX - startX) > 3 || Math.abs(t.clientY - startY) > 3) {
+          moved = true;
+          if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; }
+          e.preventDefault(); // 阻止滚动
+        }
+        var body = pageEl.querySelector(".dms-page-body");
+        if (!body) return;
+        var rect = body.getBoundingClientRect();
+        // touchOffsetX/Y 已含 bodyRect 偏移，所以直接用 t.clientX - touchOffsetX
+        var nx = t.clientX - touchOffsetX;
+        var ny = t.clientY - touchOffsetY;
+        annot.x = Math.max(0, Math.min(nx, rect.width - 80));
+        annot.y = Math.max(0, Math.min(ny, rect.height - 40));
+        sticky.style.left = annot.x + "px";
+        sticky.style.top = annot.y + "px";
+      }, { passive: false });
+      sticky.addEventListener("touchend", function () {
+        if (touchDragging) {
+          touchDragging = false;
+          if (moved) { updateBlockIdByPosition(); saveCurrentDiary(); }
+        }
+      });
+      sticky.addEventListener("touchcancel", function () { touchDragging = false; });
 
       // char 写的便签加标记
       if (annot.byChar) {
@@ -1906,7 +2046,7 @@
       var old = qs(".dms-sticky-style-popup", document);
       if (old) old.remove();
       var popup = el("div", {
-        class: "dms-sticker-picker dms-sticky-style-popup",
+        class: "dms-sticker-picker dms-sticky-style-popup dms-float",
         style: { position: "fixed", zIndex: "600", maxWidth: "340px", maxHeight: "80vh", overflowY: "auto" }
       });
       popup.appendChild(el("div", { class: "dms-sticker-picker-head" }, [
@@ -2025,7 +2165,7 @@
     /* ---------- 自定义便签样式编辑器 ---------- */
     function openCustomNoteEditor(existing, onDone) {
       var overlay = el("div", {
-        class: "dms-sync-overlay",
+        class: "dms-sync-overlay dms-float",
         style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
       });
       var dlg = el("div", {
@@ -2168,23 +2308,52 @@
       });
       sticker.appendChild(resizeHandle);
 
-      var dragging = false, offsetX = 0, offsetY = 0;
-      var resizing = false, startW = 0, startH = 0, startX = 0, startY = 0;
+      var dragging = false, offsetX = 0, offsetY = 0, startX = 0, startY = 0, moved = false;
+      var resizing = false, startW = 0, startH = 0;
+      // 计算贴纸中心 y 吸附到哪个段落，写入 blockId
+      function updateStickerBlockIdByPosition() {
+        var body = pageEl.querySelector(".dms-page-body");
+        if (!body) return;
+        var blocks = body.querySelectorAll(".dms-block");
+        if (!blocks.length) return;
+        var sr = sticker.getBoundingClientRect();
+        var cy = sr.top + sr.height / 2;
+        var best = null, bestDist = Infinity;
+        blocks.forEach(function (b) {
+          var r = b.getBoundingClientRect();
+          if (cy >= r.top && cy <= r.bottom) { best = b; bestDist = 0; }
+          else {
+            var d = Math.min(Math.abs(cy - r.top), Math.abs(cy - r.bottom));
+            if (d < bestDist) { bestDist = d; best = b; }
+          }
+        });
+        if (best) s.blockId = best.getAttribute("data-block-id") || null;
+      }
+      function clampPos(nx, ny) {
+        var body = pageEl.querySelector(".dms-page-body");
+        if (!body) return { x: nx, y: ny };
+        var rect = body.getBoundingClientRect();
+        return {
+          x: Math.max(0, Math.min(nx, rect.width - sticker.offsetWidth)),
+          y: Math.max(0, Math.min(ny, rect.height - sticker.offsetHeight))
+        };
+      }
       sticker.addEventListener("pointerdown", function (e) {
         if (e.target === delBtn) return;
+        if (e.pointerType === "touch") return; // 触摸走 touch 事件
         if (e.target === resizeHandle) {
-          resizing = true;
+          resizing = true; moved = false;
           startW = sticker.offsetWidth;
           startH = sticker.offsetHeight;
-          startX = e.clientX;
-          startY = e.clientY;
-          sticker.setPointerCapture(e.pointerId);
+          startX = e.clientX; startY = e.clientY;
+          try { sticker.setPointerCapture(e.pointerId); } catch (_) {}
           return;
         }
-        dragging = true;
+        dragging = true; moved = false;
+        startX = e.clientX; startY = e.clientY;
         offsetX = e.clientX - sticker.offsetLeft;
         offsetY = e.clientY - sticker.offsetTop;
-        sticker.setPointerCapture(e.pointerId);
+        try { sticker.setPointerCapture(e.pointerId); } catch (_) {}
         sticker.style.cursor = "grabbing";
       });
       sticker.addEventListener("pointermove", function (e) {
@@ -2195,16 +2364,67 @@
           sticker.style.height = newH + "px";
           s.size = newW;
         } else if (dragging) {
-          s.x = e.clientX - offsetX;
-          s.y = e.clientY - offsetY;
+          if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
+          var p = clampPos(e.clientX - offsetX, e.clientY - offsetY);
+          s.x = p.x; s.y = p.y;
           sticker.style.left = s.x + "px";
           sticker.style.top = s.y + "px";
         }
       });
       sticker.addEventListener("pointerup", function () {
-        if (dragging) { dragging = false; sticker.style.cursor = "grab"; saveCurrentDiary(); }
+        if (dragging) {
+          dragging = false; sticker.style.cursor = "grab";
+          if (moved) { updateStickerBlockIdByPosition(); saveCurrentDiary(); }
+        }
         if (resizing) { resizing = false; saveCurrentDiary(); }
       });
+      sticker.addEventListener("pointercancel", function () { dragging = false; resizing = false; });
+
+      // 触摸事件（移动端）
+      var tDragging = false, tResizing = false, tOffX = 0, tOffY = 0;
+      sticker.addEventListener("touchstart", function (e) {
+        if (e.target === delBtn) return;
+        if (e.touches.length !== 1) return;
+        var t = e.touches[0];
+        var body = pageEl.querySelector(".dms-page-body");
+        var br = body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+        if (e.target === resizeHandle) {
+          tResizing = true; moved = false;
+          startW = sticker.offsetWidth; startH = sticker.offsetHeight;
+          startX = t.clientX; startY = t.clientY;
+        } else {
+          tDragging = true; moved = false;
+          startX = t.clientX; startY = t.clientY;
+          tOffX = t.clientX - br.left - s.x;
+          tOffY = t.clientY - br.top - s.y;
+        }
+      }, { passive: true });
+      sticker.addEventListener("touchmove", function (e) {
+        if (e.touches.length !== 1) return;
+        var t = e.touches[0];
+        if (Math.abs(t.clientX - startX) > 3 || Math.abs(t.clientY - startY) > 3) {
+          moved = true;
+          e.preventDefault();
+        }
+        if (tResizing) {
+          var newW = Math.max(32, startW + (t.clientX - startX));
+          var newH = Math.max(32, startH + (t.clientY - startY));
+          sticker.style.width = newW + "px";
+          sticker.style.height = newH + "px";
+          s.size = newW;
+        } else if (tDragging) {
+          var p = clampPos(t.clientX - tOffX, t.clientY - tOffY);
+          s.x = p.x; s.y = p.y;
+          sticker.style.left = s.x + "px";
+          sticker.style.top = s.y + "px";
+        }
+      }, { passive: false });
+      sticker.addEventListener("touchend", function () {
+        if (tDragging && moved) { updateStickerBlockIdByPosition(); saveCurrentDiary(); }
+        if (tResizing) saveCurrentDiary();
+        tDragging = false; tResizing = false;
+      });
+      sticker.addEventListener("touchcancel", function () { tDragging = false; tResizing = false; });
       return sticker;
     }
 
@@ -2223,7 +2443,7 @@
           toast("\u8fd9\u4e2a\u4f1a\u8bdd\u8fd8\u6ca1\u6302\u8f7d\u8868\u60c5\u5305\u7ec4\uff0c\u8bf7\u5728\u8bbe\u7f6e\u2192\u8868\u60c5\u5305\u5e93\u91cc\u6dfb\u52a0\u5e76\u6302\u8f7d");
           return;
         }
-        var picker = el("div", { class: "dms-sticker-picker" });
+        var picker = el("div", { class: "dms-sticker-picker dms-float" });
         picker.appendChild(el("div", { class: "dms-sticker-picker-head" }, [
           el("span", { style: { fontSize: "12px", color: "var(--ink-mute)" } }, ["\u9009\u4e2a\u8868\u60c5\u5305\u8d34\u4e0a\u53bb"]),
           el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { picker.remove(); } }, ["\u5173\u95ed"])
@@ -2279,7 +2499,7 @@
         if (old) old.remove();
 
         var overlay = el("div", { class: "dms-mount-overlay", style: { position: "fixed", inset: "0", background: "rgba(0,0,0,0.4)", zIndex: "400", display: "flex", alignItems: "center", justifyContent: "center" } });
-        var dlg = el("div", { class: "dms-mount-dialog", style: { background: "var(--paper)", borderRadius: "var(--radius)", padding: "16px", maxWidth: "360px", width: "90%", maxHeight: "80vh", overflowY: "auto" } });
+        var dlg = el("div", { class: "dms-mount-dialog dms-float", style: { background: "var(--paper)", borderRadius: "var(--radius)", padding: "16px", maxWidth: "360px", width: "90%", maxHeight: "80vh", overflowY: "auto" } });
         dlg.appendChild(el("div", { class: "dms-handwritten", style: { fontSize: "16px", color: "var(--red)", marginBottom: "8px" } }, ["\u6302\u8f7d\u8868\u60c5\u5305\u7ec4"]));
         dlg.appendChild(el("div", { class: "dms-hint", style: { marginBottom: "10px" } }, ["\u52fe\u9009\u8981\u6302\u8f7d\u5230\u8fd9\u4e2a\u4f1a\u8bdd\u7684\u7ec4\uff0c\u53ef\u591a\u9009\u3002"]));
 
@@ -2385,7 +2605,7 @@
     /* ---------- 预设编辑器 ---------- */
     function openPresetEditor(kind, existing, onDone) {
       var overlay = el("div", {
-        class: "dms-sync-overlay",
+        class: "dms-sync-overlay dms-float",
         style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
       });
       var dlg = el("div", {
@@ -2716,7 +2936,7 @@
     /* ---------- 批量导入表情包对话框 ---------- */
     function openBatchStickerDialog(group, onDone) {
       var overlay = el("div", {
-        class: "dms-sync-overlay",
+        class: "dms-sync-overlay dms-float",
         style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
       });
       var dlg = el("div", {
@@ -3252,7 +3472,7 @@
 
       return new Promise(function (resolve) {
         var overlay = el("div", {
-          class: "dms-sync-overlay",
+          class: "dms-sync-overlay dms-float",
           style: {
             position: "fixed", inset: "0", background: "rgba(74,60,40,0.45)",
             zIndex: "500", display: "flex", alignItems: "center", justifyContent: "center",
@@ -3451,20 +3671,33 @@
       parts.push("\u3010\u4ea4\u6362\u65e5\u8bb0 \u00b7 " + dateKey + "\u3011");
       parts.push("\u4ee5\u4e0b\u662f " + userName + " \u548c " + charName + " \u4eca\u5929\u5199\u7ed9\u5bf9\u65b9\u770b\u7684\u4ea4\u6362\u65e5\u8bb0\u3002\u5305\u542b\u5f7c\u6b64\u7559\u4e0b\u7684\u4fbf\u7b7e\u4e0e\u8868\u60c5\u8d34\u7eb8\uff0c\u8bf7\u5728\u4e3b\u804a\u5929\u4e2d\u81ea\u7136\u5730\u56de\u5e94\u8fd9\u4e9b\u5185\u5bb9\u3002");
 
-      // ===== char 的日记 + user 给 char 留的便签/贴纸（按段落关联）=====
+      // ===== char 的日记 + user 给 char 留的批注/便签/贴纸（按段落关联）=====
       if (diary.charDiary && diary.charDiary.trim()) {
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + charName + " \u7ed9 " + userName + " \u7684\u65e5\u8bb0\u3011");
         var charBlocks = parseBlocks(diary.charDiary);
-        var charAnnots = (diary.annotations || []).filter(function (a) { return a.type === "sticky"; });
+        // user 给 char 留的批注（heart/crossout/comment，带 selectedText）和便签（sticky）
+        var userAnnotsOnChar = (diary.annotations || []).filter(function (a) {
+          return a.type === "sticky" || a.selectedText;
+        });
         var charStickers = diary.stickers || [];
-        // 没有段落的便签/贴纸（兜底）
         var unboundAnnots = [];
         var unboundStickers = [];
         charBlocks.forEach(function (blk) {
           parts.push("");
           parts.push(blk.content);
-          var blkAnnots = charAnnots.filter(function (a) { return (a.blockId || null) === blk.id; });
+          // 段落内的文字批注（user 在 char 文字上做的标记）
+          var blkTextAnnots = userAnnotsOnChar.filter(function (a) {
+            return a.selectedText && (a.blockId || null) === blk.id;
+          });
+          blkTextAnnots.forEach(function (a) {
+            var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
+            parts.push("  \u3010" + userName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+          });
+          // 段落内的便签
+          var blkAnnots = userAnnotsOnChar.filter(function (a) {
+            return a.type === "sticky" && (a.blockId || null) === blk.id;
+          });
           blkAnnots.forEach(function (a) {
             parts.push("  \u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
           });
@@ -3473,13 +3706,17 @@
             parts.push("  \u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
           });
         });
-        // 没关联到段落的便签/贴纸放在末尾
-        unboundAnnots = charAnnots.filter(function (a) { return !a.blockId; });
+        unboundAnnots = userAnnotsOnChar.filter(function (a) { return !a.blockId; });
         unboundStickers = charStickers.filter(function (s) { return !s.blockId; });
         if (unboundAnnots.length || unboundStickers.length) {
           parts.push("");
           unboundAnnots.forEach(function (a) {
-            parts.push("\u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            if (a.selectedText) {
+              var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
+              parts.push("\u3010" + userName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+            } else {
+              parts.push("\u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            }
           });
           unboundStickers.forEach(function (s) {
             parts.push("\u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
@@ -3487,26 +3724,51 @@
         }
       }
 
-      // ===== user 的日记 + char 给 user 留的便签 =====
+      // ===== user 的日记 + char 给 user 留的批注/便签/贴纸（按段落关联）=====
       if (diary.userDiary && diary.userDiary.trim()) {
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + userName + " \u7ed9 " + charName + " \u7684\u65e5\u8bb0\u3011");
         var userBlocks = parseBlocks(diary.userDiary);
-        var userStickyFromChar = (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; });
+        // char 给 user 留的批注（heart/crossout/comment，带 selectedText）和便签（sticky）
+        var charAnnotsOnUser = (diary.charAnnotations || []).filter(function (a) {
+          return a.type === "sticky" || a.selectedText;
+        });
+        var charStickersOnUser = diary.charStickers || [];
         userBlocks.forEach(function (blk) {
           parts.push("");
           parts.push(blk.content);
-          var blkAnnots = userStickyFromChar.filter(function (a) { return (a.blockId || null) === blk.id; });
-          blkAnnots.forEach(function (a) {
+          var blkTextAnnots = charAnnotsOnUser.filter(function (a) {
+            return a.selectedText && (a.blockId || null) === blk.id;
+          });
+          blkTextAnnots.forEach(function (a) {
+            var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
+            parts.push("  \u3010" + charName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+          });
+          var blkStickies = charAnnotsOnUser.filter(function (a) {
+            return a.type === "sticky" && (a.blockId || null) === blk.id;
+          });
+          blkStickies.forEach(function (a) {
             parts.push("  \u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
           });
+          var blkStk = charStickersOnUser.filter(function (s) { return (s.blockId || null) === blk.id; });
+          blkStk.forEach(function (s) {
+            parts.push("  \u3010" + charName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+          });
         });
-        // 没关联到段落的 char 便签放在末尾
-        var unboundCharAnnots = userStickyFromChar.filter(function (a) { return !a.blockId; });
-        if (unboundCharAnnots.length) {
+        var unboundCharAnnots = charAnnotsOnUser.filter(function (a) { return !a.blockId; });
+        var unboundCharStickers = charStickersOnUser.filter(function (s) { return !s.blockId; });
+        if (unboundCharAnnots.length || unboundCharStickers.length) {
           parts.push("");
           unboundCharAnnots.forEach(function (a) {
-            parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            if (a.selectedText) {
+              var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
+              parts.push("\u3010" + charName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+            } else {
+              parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            }
+          });
+          unboundCharStickers.forEach(function (s) {
+            parts.push("\u3010" + charName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
           });
         }
       }
@@ -3528,11 +3790,16 @@
         if (!annots || !annots.length) {
           toast("TA\u6ca1\u6709\u4ec0\u4e48\u60f3\u8bf4\u7684\u2026");
         } else {
-          state.currentDiary.charAnnotations = annots.map(function (a) {
+          // 只替换文字批注（heart/crossout/comment），保留 sticky 类型便签（char 给 user 的便签）
+          var newAnnots = annots.map(function (a) {
             a.id = crypto.randomUUID();
             a.createdAt = Date.now();
             return a;
           });
+          var keptStickies = (state.currentDiary.charAnnotations || []).filter(function (a) {
+            return a.type === "sticky";
+          });
+          state.currentDiary.charAnnotations = newAnnots.concat(keptStickies);
           state.currentDiary.updatedAt = Date.now();
           return saveCurrentDiary().then(function () {
             toast("TA\u6279\u6ce8\u4e86 " + annots.length + " \u5904");
@@ -3602,6 +3869,8 @@
         iconImage: "",
         mount: function (container, roche) {
           ensureStyle();
+          // 给 documentElement 加 dms-vars class，确保挂在 body 上的弹窗也能拿到 CSS 变量
+          document.documentElement.classList.add("dms-vars");
           // 加载 user 自定义便签样式
           getCustomNoteStyles(roche).then(function (list) { applyCustomNoteStyles(list); }).catch(function () {});
           var root = document.createElement("div");

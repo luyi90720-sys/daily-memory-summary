@@ -1937,7 +1937,7 @@
 
       // user 自定义 CSS 样式
       popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "10px 2px 2px" } }, ["\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
-      getCustomNoteStyles().then(function (customList) {
+      getCustomNoteStyles(roche).then(function (customList) {
         if (!customList.length) {
           popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", padding: "4px 2px" } }, ["\u8fd8\u6ca1\u6709\u81ea\u5b9a\u4e49\u6837\u5f0f\uff0c\u70b9\u4e0b\u65b9\u201c+ \u65b0\u5efa\u201d\u6dfb\u52a0\u3002"]));
         } else {
@@ -2077,10 +2077,10 @@
             if (!nameInput.value.trim()) { toast("\u8bf7\u586b\u540d\u79f0"); return; }
             data.name = nameInput.value.trim();
             data.css = cssArea.value;
-            getCustomNoteStyles().then(function (list) {
+            getCustomNoteStyles(roche).then(function (list) {
               var idx = list.findIndex(function (x) { return x.id === data.id; });
               if (idx >= 0) list[idx] = data; else list.push(data);
-              return saveCustomNoteStyles(list).then(function () {
+              return saveCustomNoteStyles(roche, list).then(function () {
                 applyCustomNoteStyles(list);
                 toast("\u5df2\u4fdd\u5b58");
                 overlay.remove();
@@ -2101,9 +2101,9 @@
           class: "dms-btn dms-btn-sm",
           style: { marginTop: "6px", width: "100%", color: "var(--red)" },
           onclick: function () {
-            getCustomNoteStyles().then(function (list) {
+            getCustomNoteStyles(roche).then(function (list) {
               var filtered = list.filter(function (x) { return x.id !== data.id; });
-              return saveCustomNoteStyles(filtered).then(function () {
+              return saveCustomNoteStyles(roche, filtered).then(function () {
                 applyCustomNoteStyles(filtered);
                 toast("\u5df2\u5220\u9664");
                 overlay.remove();
@@ -2325,7 +2325,7 @@
       var bar = el("div", { class: "dms-preset-bar", style: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" } });
       bar.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u9884\u8bbe:"]));
 
-      getPresets().then(function (presets) {
+      getPresets(roche).then(function (presets) {
         var list = (kind === "char") ? presets.charPresets : presets.userPresets;
         if (!list.length) {
           bar.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u8fd8\u6ca1\u6709"]));
@@ -2425,11 +2425,11 @@
             data.name = nameInput.value.trim();
             data.chain = chainArea.value;
             data.format = formatArea.value;
-            getPresets().then(function (presets) {
+            getPresets(roche).then(function (presets) {
               var list = (kind === "char") ? presets.charPresets : presets.userPresets;
               var idx = list.findIndex(function (x) { return x.id === data.id; });
               if (idx >= 0) list[idx] = data; else list.push(data);
-              return savePresets(presets).then(function () {
+              return savePresets(roche, presets).then(function () {
                 toast("\u5df2\u4fdd\u5b58");
                 overlay.remove();
                 if (onDone) onDone();
@@ -2449,12 +2449,12 @@
           class: "dms-btn dms-btn-sm",
           style: { marginTop: "6px", width: "100%", color: "var(--red)" },
           onclick: function () {
-            getPresets().then(function (presets) {
+            getPresets(roche).then(function (presets) {
               var list = (kind === "char") ? presets.charPresets : presets.userPresets;
               var filtered = list.filter(function (x) { return x.id !== data.id; });
               if (kind === "char") presets.charPresets = filtered;
               else presets.userPresets = filtered;
-              return savePresets(presets).then(function () {
+              return savePresets(roche, presets).then(function () {
                 toast("\u5df2\u5220\u9664");
                 overlay.remove();
                 if (onDone) onDone();

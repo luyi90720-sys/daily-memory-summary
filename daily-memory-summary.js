@@ -81,8 +81,8 @@
     messageLimit: 5000,
     defaultStickyStyle: null,       // user 自己添加便签时的默认样式（null=随机）
     defaultCharStickyStyle: null,   // char 给 user 写便签时的默认样式（null=随机）
-    userThinkingChain: "",          // user 写日记的思维链（空则不使用）
-    userFormat: ""                  // user 写日记的输出格式
+    userThinkingChain: "",          // 兼容旧设置（已弃用，不再使用）
+    userFormat: ""                  // 兼容旧设置（已弃用，不再使用）
   };
 
   /* ---------- DOM 工具 ---------- */
@@ -1797,10 +1797,16 @@
       state.currentDiary.annotations.push(annot);
       // 直接在页面上添加便签 DOM，不重新渲染整个页面
       var body = pageEl.querySelector(".dms-page-body");
+      var stickyEl = null;
       if (body) {
-        body.appendChild(makeStickyNote(annot, pageEl));
+        stickyEl = makeStickyNote(annot, pageEl);
+        body.appendChild(stickyEl);
       }
       saveCurrentDiary();
+      // 立即弹出样式选择器，让 user 自由选样式
+      if (stickyEl) {
+        setTimeout(function () { showStickyStylePicker(annot, stickyEl); }, 50);
+      }
     }
 
     function makeStickyNote(annot, pageEl) {
@@ -2339,9 +2345,6 @@
                 if (kind === "char") {
                   state.settings.charThinkingChain = p.chain || "";
                   state.settings.charFormat = p.format || "";
-                } else {
-                  state.settings.userThinkingChain = p.chain || "";
-                  state.settings.userFormat = p.format || "";
                 }
                 saveSettings(roche, state.settings).then(function () {
                   toast("\u5df2\u5e94\u7528\u9884\u8bbe");
@@ -2393,8 +2396,8 @@
       var data = existing ? JSON.parse(JSON.stringify(existing)) : {
         id: "p" + Date.now(),
         name: "",
-        chain: (kind === "char") ? (state.settings.charThinkingChain || "") : (state.settings.userThinkingChain || ""),
-        format: (kind === "char") ? (state.settings.charFormat || "") : (state.settings.userFormat || "")
+        chain: state.settings.charThinkingChain || "",
+        format: state.settings.charFormat || ""
       };
 
       dlg.appendChild(el("div", { class: "dms-page-header", style: { marginBottom: "10px" } }, [
@@ -2516,28 +2519,27 @@
         state.settings.charFormat = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
       });
       sec2.appendChild(cf);
+      // 重置为默认思维链和格式（解决旧版本设置遗留的问题）
+      sec2.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm",
+        style: { marginTop: "8px", width: "100%", color: "var(--red)", borderColor: "var(--line)" },
+        onclick: function () {
+          roche.ui.confirm({
+            title: "\u91cd\u7f6e\u4e3a\u9ed8\u8ba4",
+            message: "\u5c06\u628a TA \u7684\u601d\u7ef4\u94fe\u548c\u8f93\u51fa\u683c\u5f0f\u91cd\u7f6e\u4e3a\u63d2\u4ef6\u9ed8\u8ba4\u503c\uff08\u6700\u65b0\u7248\u672c\uff09\u3002\u5df2\u81ea\u5b9a\u4e49\u7684\u5185\u5bb9\u4f1a\u88ab\u8986\u76d6\uff0c\u662f\u5426\u7ee7\u7eed\uff1f"
+          }).then(function (ok) {
+            if (!ok) return;
+            state.settings.charThinkingChain = DEFAULT_SETTINGS.charThinkingChain;
+            state.settings.charFormat = DEFAULT_SETTINGS.charFormat;
+            saveSettings(roche, state.settings).then(function () {
+              tc.value = state.settings.charThinkingChain;
+              cf.value = state.settings.charFormat;
+              toast("\u5df2\u91cd\u7f6e\u4e3a\u9ed8\u8ba4");
+            });
+          });
+        }
+      }, ["\u21bb \u91cd\u7f6e\u4e3a\u9ed8\u8ba4\u601d\u7ef4\u94fe/\u683c\u5f0f"]));
       body.appendChild(sec2);
-
-      // user 的思维链（带预设栏）
-      var secUserChain = el("div", { class: "dms-settings-section" }, [
-        el("h3", {}, ["\u6211\u7684\u601d\u7ef4\u94fe"]),
-        el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["\u7528\u4e8e\u751f\u6210 user \u65e5\u8bb0\u7684\u601d\u7ef4\u94fe\uff08\u53ef\u9009\uff0c\u4e0d\u586b\u5219\u4e0d\u4f7f\u7528\uff09"])
-      ]);
-      secUserChain.appendChild(buildPresetBar("user"));
-      var utc = el("textarea", { class: "dms-textarea", placeholder: "\u8bf7\u8f93\u5165\u601d\u7ef4\u94fe\u2026" });
-      utc.value = state.settings.userThinkingChain || "";
-      utc.addEventListener("change", function () {
-        state.settings.userThinkingChain = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
-      });
-      secUserChain.appendChild(utc);
-      secUserChain.appendChild(el("div", { class: "dms-hint", style: { marginTop: "6px" } }, ["\u6211\u7684\u8f93\u51fa\u683c\u5f0f"]));
-      var ucf = el("textarea", { class: "dms-textarea", style: { minHeight: "60px" }, placeholder: "\u8f93\u51fa\u683c\u5f0f\u6307\u4ee4\u2026" });
-      ucf.value = state.settings.userFormat || "";
-      ucf.addEventListener("change", function () {
-        state.settings.userFormat = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
-      });
-      secUserChain.appendChild(ucf);
-      body.appendChild(secUserChain);
 
       // 记忆同步
       var sec4 = el("div", { class: "dms-settings-section" }, [
@@ -2640,6 +2642,59 @@
         }));
       });
       secSticky.appendChild(charStyleRow);
+
+      // user 自定义便签 CSS 样式管理（独立入口，可预览不同样式）
+      secSticky.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink)", fontWeight: "600", margin: "14px 0 6px", borderTop: "1px dashed var(--line)", paddingTop: "10px" } }, ["\u81ea\u5b9a\u4e49\u4fbf\u7b7e\u6837\u5f0f (CSS)"]));
+      secSticky.appendChild(el("div", { class: "dms-hint", style: { marginBottom: "8px" } }, ["\u7528 CSS \u81ea\u5b9a\u4e49\u4fbf\u7b7e\u6837\u5f0f\uff0c\u5199\u4fbf\u7b7e\u65f6\u53ef\u9009\u7528\u3002\u53ef\u9884\u89c8\u4e0d\u540c\u6548\u679c\u3002"]));
+      var customStyleList = el("div", { class: "dms-custom-style-list", style: { marginBottom: "8px" } });
+      function renderCustomStyleList() {
+        customStyleList.innerHTML = "";
+        getCustomNoteStyles(roche).then(function (list) {
+          if (!list.length) {
+            customStyleList.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", padding: "6px 0" } }, ["\u8fd8\u6ca1\u6709\u81ea\u5b9a\u4e49\u6837\u5f0f\uff0c\u70b9\u4e0b\u65b9\u201c+ \u65b0\u5efa\u201d\u3002"]));
+            return;
+          }
+          list.forEach(function (cs) {
+            var row = el("div", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "6px 0", borderBottom: "1px solid var(--line)" } });
+            // 预览
+            row.appendChild(el("div", {
+              class: "dms-sticky custom-" + cs.id,
+              style: { position: "relative", left: "0", top: "0", width: "40px", height: "30px", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "10px", flexShrink: "0" }
+            }, ["\u9884\u89c8"]));
+            row.appendChild(el("div", { style: { flex: "1", fontSize: "12px", color: "var(--ink)" } }, [cs.name]));
+            row.appendChild(el("button", {
+              class: "dms-btn dms-btn-sm dms-btn-ghost",
+              onclick: function () { openCustomNoteEditor(cs, function () { renderCustomStyleList(); }); }
+            }, ["\u7f16\u8f91"]));
+            row.appendChild(el("button", {
+              class: "dms-btn dms-btn-sm dms-btn-ghost",
+              style: { color: "var(--red)" },
+              onclick: function () {
+                roche.ui.confirm({ title: "\u5220\u9664\u6837\u5f0f", message: "\u5220\u9664\u81ea\u5b9a\u4e49\u6837\u5f0f\u300c" + cs.name + "\u300d\uff1f" }).then(function (ok) {
+                  if (!ok) return;
+                  getCustomNoteStyles(roche).then(function (all) {
+                    var filtered = all.filter(function (x) { return x.id !== cs.id; });
+                    return saveCustomNoteStyles(roche, filtered).then(function () {
+                      applyCustomNoteStyles(filtered);
+                      renderCustomStyleList();
+                      toast("\u5df2\u5220\u9664");
+                    });
+                  });
+                });
+              }
+            }, ["\u5220\u9664"]));
+            customStyleList.appendChild(row);
+          });
+        });
+      }
+      renderCustomStyleList();
+      secSticky.appendChild(customStyleList);
+      secSticky.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-primary",
+        style: { width: "100%" },
+        onclick: function () { openCustomNoteEditor(null, function () { renderCustomStyleList(); }); }
+      }, ["+ \u65b0\u5efa\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
+
       body.appendChild(secSticky);
 
       // 表情包库
@@ -3118,12 +3173,9 @@
         "\u6ce8\u610f\uff1a\u4fbf\u7b7e\u5185\u5bb9\u5355\u72ec\u6210\u884c\uff0c\u4e0d\u8981\u548c\u65e5\u8bb0\u6df7\u5728\u4e00\u8d77\u3002\u65e5\u8bb0\u548c\u4fbf\u7b7e\u90fd\u7528\u4e0a\u9762\u7684\u6807\u8bb0\u5206\u9694\u3002"
       });
       return callAI(roche, msgs, 0.7).then(function (text) {
-        // 解析 AI 输出，分离 char 日记和 char 给 user 的便签
         var parsed = parseCharDiaryAndStickyNotes(text);
-        // 如果解析出了便签，保存到 charAnnotations
         if (parsed.stickyNotes.length > 0) {
           if (!state.currentDiary) state.currentDiary = {};
-          // char 便签默认样式：优先用 user 给 char 挂载的默认样式，否则在 10 款中循环分配
           var charDefaultStyle = state.settings.defaultCharStickyStyle;
           state.currentDiary.charAnnotations = (state.currentDiary.charAnnotations || []).concat(
             parsed.stickyNotes.map(function (note, idx) {
@@ -3150,21 +3202,16 @@
       if (!text) return { diary: "", stickyNotes: [] };
       var diary = text;
       var stickyNotes = [];
-
-      // 尝试提取【便签开始】...【便签结束】
       var stickyRe = /\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011([\s\S]*?)\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011/g;
       var m;
       while ((m = stickyRe.exec(text)) !== null) {
         var content = m[1].trim();
-        // 每行作为单独便签
         content.split("\n").forEach(function (line) {
           line = line.trim();
           if (line) stickyNotes.push(line);
         });
       }
-      // 从日记中移除便签部分
       diary = text.replace(stickyRe, "").trim();
-      // 如果没找到便签标记，尝试另一种格式：以【便签】开头的行
       if (stickyNotes.length === 0) {
         var lines = text.split("\n");
         var diaryLines = [];
@@ -3178,10 +3225,7 @@
         });
         if (stickyNotes.length > 0) diary = diaryLines.join("\n").trim();
       }
-
-      // 限制 4-6 条
       if (stickyNotes.length > 6) stickyNotes = stickyNotes.slice(0, 6);
-
       return { diary: diary, stickyNotes: stickyNotes };
     }
 

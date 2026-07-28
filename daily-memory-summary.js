@@ -25,6 +25,8 @@
   var STORAGE_SETTINGS = "dms-settings";
   var STORAGE_DIARIES = "dms-diaries";
   var STORAGE_STICKERS = "dms-stickers";
+  var STORAGE_CUSTOM_NOTES = "dms-custom-notes";   // user自定义便签样式（CSS）
+  var STORAGE_PRESETS = "dms-presets";              // 思维链/格式预设
 
   /* ---------- 默认设置 ---------- */
   var DEFAULT_SETTINGS = {
@@ -56,11 +58,11 @@
       "   - 直接以 {{char}} 的独白或日记形式开始，不要写“总结：”“剧情梗概：”这类标题。",
       "   - 整体读起来就像一段活生生的角色内心独白或回忆，保留情绪和悬念，别写成客观报告。",
       "",
-      "6. 分块书写（重要）",
-      "   - 将日记分成若干个语义独立的段落块，每块聚焦一个事件、场景或情绪转折。",
-      "   - 每块开头用【块A】【块B】【块C】……这样的标记单独占一行（按字母顺序递增，跳过不吉利的字母可省略）。",
-      "   - 每块内容 100~200 字左右，块与块之间用空行分隔，块标记行单独成行。",
-      "   - 块的数量控制在 3~6 块，不要过碎或过长。",
+      "6. 段落组织（重要）",
+      "   - 用自然的换行分段来组织日记内容，每段聚焦一个事件、场景或情绪转折。",
+      "   - 每段内容 100~200 字左右，段与段之间空一行，让日记像真实的手写日记那样自然流畅。",
+      "   - 段落数量控制在 3~6 段，不要过碎或过长。",
+      "   - 不要使用任何特殊标记（如【块A】），直接换行分段即可。",
       "",
       "其他要求：",
       "- 称呼user时，可以用ta",
@@ -70,7 +72,7 @@
       "- 字数限定在800字左右，聊天记录不在字数限定范围。",
       "- 必须在生成日记前进行思考，哪些对话是char发的，哪些对话是user发的，以事件、话题与情感来记录。"
     ].join("\n"),
-    charFormat: "请直接以 {{char}} 的第一人称写日记，按照思维链中的分块要求，用【块A】【块B】【块C】等标记把日记分成 3~6 个语义独立的段落块，每块 100~200 字。",
+    charFormat: "请直接以 {{char}} 的第一人称写日记，按照思维链中的要求，用自然换行分段的方式组织 3~6 段，每段 100~200 字，段与段之间空一行。不要使用任何特殊标记。",
     syncToFactMemory: false,
     syncToShortTerm: false,
     rememberSyncChoice: false,
@@ -78,7 +80,9 @@
     swapMode: true,
     messageLimit: 5000,
     defaultStickyStyle: null,       // user 自己添加便签时的默认样式（null=随机）
-    defaultCharStickyStyle: null    // char 给 user 写便签时的默认样式（null=随机）
+    defaultCharStickyStyle: null,   // char 给 user 写便签时的默认样式（null=随机）
+    userThinkingChain: "",          // user 写日记的思维链（空则不使用）
+    userFormat: ""                  // user 写日记的输出格式
   };
 
   /* ---------- DOM 工具 ---------- */
@@ -406,6 +410,45 @@
     return out;
   }
 
+  /* ---------- user自定义便签样式存储 ----------
+   * 结构: [{ id, name, css }]
+   * css 是 user 输入的 CSS 字符串，应用时为 .dms-sticky.custom-{id} 注入
+   */
+  function getCustomNoteStyles(roche) {
+    return roche.storage.get(STORAGE_CUSTOM_NOTES).then(function (s) {
+      return s || [];
+    }).catch(function () { return []; });
+  }
+  function saveCustomNoteStyles(roche, list) {
+    return roche.storage.set(STORAGE_CUSTOM_NOTES, list);
+  }
+  // 注入自定义便签 CSS 到 <style>
+  function applyCustomNoteStyles(list) {
+    var tag = document.getElementById(STYLE_ID + "-custom-notes");
+    if (!tag) {
+      tag = document.createElement("style");
+      tag.id = STYLE_ID + "-custom-notes";
+      document.head.appendChild(tag);
+    }
+    var prefix = "." + ROOT_CLASS + " .dms-sticky.custom-";
+    var css = (list || []).map(function (s) {
+      return prefix + s.id + "{" + (s.css || "") + "}";
+    }).join("\n");
+    tag.textContent = css;
+  }
+
+  /* ---------- 思维链/格式预设存储 ----------
+   * 结构: { charPresets: [{id, name, chain, format}], userPresets: [{id, name, chain, format}] }
+   */
+  function getPresets(roche) {
+    return roche.storage.get(STORAGE_PRESETS).then(function (s) {
+      return s || { charPresets: [], userPresets: [] };
+    }).catch(function () { return { charPresets: [], userPresets: [] }; });
+  }
+  function savePresets(roche, p) {
+    return roche.storage.set(STORAGE_PRESETS, p);
+  }
+
   /* ============================================================
    *  样式 — 手账本风格
    * ============================================================ */
@@ -604,6 +647,34 @@
       "  backdrop-filter:blur(12px);border-top:1px solid var(--line);",
       "}",
       "." + ROOT_CLASS + " .dms-foot-left{font-size:11px;color:var(--ink-mute);}",
+      "/* 手账风底栏按钮：透明背景+墨色文字，悬停浮起 */",
+      "." + ROOT_CLASS + " .dms-foot-btn{",
+      "  display:inline-flex;align-items:center;gap:4px;cursor:pointer;font-family:inherit;",
+      "  background:transparent;border:none;color:var(--ink);font-size:12px;",
+      "  padding:6px 10px;border-radius:var(--radius-sm);transition:all .2s ease;",
+      "  position:relative;",
+      "}",
+      "." + ROOT_CLASS + " .dms-foot-btn::after{",
+      "  content:'';position:absolute;left:8px;right:8px;bottom:2px;height:1px;",
+      "  background:currentColor;opacity:0.25;transition:opacity .2s ease;",
+      "}",
+      "." + ROOT_CLASS + " .dms-foot-btn:hover{background:rgba(196,69,54,0.06);}",
+      "." + ROOT_CLASS + " .dms-foot-btn:hover::after{opacity:0.6;}",
+      "." + ROOT_CLASS + " .dms-foot-btn.disabled{opacity:.4;cursor:not-allowed;}",
+      "." + ROOT_CLASS + " .dms-foot-btn-icon{font-size:14px;line-height:1;color:var(--ink);}",
+      "." + ROOT_CLASS + " .dms-foot-btn-label{font-size:12px;letter-spacing:0.5px;}",
+      "/* 主按钮：墨红色描边+胶带感底色 */",
+      "." + ROOT_CLASS + " .dms-foot-btn-primary{",
+      "  color:var(--red);font-weight:600;",
+      "  background:rgba(196,69,54,0.06);",
+      "  padding:6px 14px;",
+      "}",
+      "." + ROOT_CLASS + " .dms-foot-btn-primary::after{background:var(--red);opacity:0.4;}",
+      "." + ROOT_CLASS + " .dms-foot-btn-primary:hover{",
+      "  background:rgba(196,69,54,0.12);box-shadow:0 1px 4px rgba(196,69,54,0.2);",
+      "}",
+      "." + ROOT_CLASS + " .dms-foot-btn-primary:hover::after{opacity:0.8;}",
+      "." + ROOT_CLASS + " .dms-loading-sm{width:12px;height:12px;border-width:2px;margin-right:2px;}",
       "",
       "/* ===== Toast ===== */",
       "." + ROOT_CLASS + " .dms-toast{",
@@ -698,26 +769,42 @@
       "  color:var(--ink);box-shadow:2px 3px 8px rgba(74,60,40,0.2);",
       "  border-radius:2px;cursor:move;line-height:1.5;",
       "  transform:rotate(-1deg);font-family:'Ma Shan Zheng','KaiTi',cursive;",
+      "  word-wrap:break-word;word-break:break-word;",
       "}",
-      "/* 10款内置便签样式 */",
-      "." + ROOT_CLASS + " .dms-sticky.note-0{background:#FFE4A0;transform:rotate(-1deg);}",
-      "." + ROOT_CLASS + " .dms-sticky.note-1{background:#FFCDD2;transform:rotate(1.5deg);border-radius:12px;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-2{background:#C8E6C9;transform:rotate(-2deg);border-left:3px solid #4CAF50;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-3{background:#BBDEFB;transform:rotate(1deg);border:1px dashed #1976D2;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-4{background:#FFF9C4;transform:rotate(-0.5deg);box-shadow:3px 3px 0 #FBC02D;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-5{background:#F8BBD0;transform:rotate(2deg);border-radius:20px;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-6{background:#D1C4E9;transform:rotate(-1.5deg);border-top:3px solid #7B1FA2;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-7{background:#FFCCBC;transform:rotate(0.5deg);box-shadow:2px 2px 4px rgba(255,87,34,0.3);}",
-      "." + ROOT_CLASS + " .dms-sticky.note-8{background:#B2DFDB;transform:rotate(-1deg);border-radius:0 12px 0 12px;}",
-      "." + ROOT_CLASS + " .dms-sticky.note-9{background:#F0F4C3;transform:rotate(1deg);border:1px solid #827717;box-shadow:3px 3px 6px rgba(130,119,23,0.2);}",
+      "/* 10款内置便签样式 - 每款完全不同的风格 */",
+      // 0. 经典便利贴 - 暖黄纸+胶带感
+      "." + ROOT_CLASS + " .dms-sticky.note-0{background:linear-gradient(180deg,#FFE4A0 0%,#FFD478 100%);transform:rotate(-1.5deg);border-radius:2px;border-top:6px solid #E6B655;box-shadow:2px 3px 10px rgba(230,182,85,0.3),inset 0 0 0 1px rgba(255,255,255,0.3);}",
+      // 1. 樱花信纸 - 粉色+圆角+蕾丝边
+      "." + ROOT_CLASS + " .dms-sticky.note-1{background:#FFE0E6;transform:rotate(1.5deg);border-radius:18px 4px 18px 4px;border:2px dashed #E89AAA;box-shadow:0 2px 8px rgba(232,154,154,0.3);position:relative;}",
+      // 2. 复古标签 - 牛皮纸+左色带
+      "." + ROOT_CLASS + " .dms-sticky.note-2{background:#D4B896;transform:rotate(-2.5deg);border-left:8px solid #5A3825;border-radius:0 4px 4px 0;color:#3D2817;font-family:'Courier New',monospace;box-shadow:2px 3px 8px rgba(90,56,37,0.3);}",
+      // 3. 拍立得相纸 - 白底+下宽边
+      "." + ROOT_CLASS + " .dms-sticky.note-3{background:#FAF8F0;transform:rotate(1deg);border:1px solid #D8D0B8;border-bottom:18px solid #F0E8D0;border-radius:2px;padding:10px 12px 4px;box-shadow:0 4px 12px rgba(0,0,0,0.12);font-size:11px;color:#5A4632;}",
+      // 4. 胶带便条 - 半透明+胶带顶
+      "." + ROOT_CLASS + " .dms-sticky.note-4{background:rgba(255,249,196,0.85);backdrop-filter:blur(2px);transform:rotate(-0.5deg);border-radius:2px;box-shadow:0 2px 6px rgba(0,0,0,0.08);}",
+      "." + ROOT_CLASS + " .dms-sticky.note-4::before{content:'';position:absolute;top:-6px;left:50%;transform:translateX(-50%) rotate(-3deg);width:60px;height:14px;background:rgba(170,200,150,0.5);border-radius:1px;}",
+      // 5. 圆形糖果 - 大圆角+渐变粉
+      "." + ROOT_CLASS + " .dms-sticky.note-5{background:radial-gradient(circle at 30% 30%,#FFE0EC,#F8BBD0);transform:rotate(2deg);border-radius:24px;padding:14px 16px;color:#8B3A52;box-shadow:0 3px 10px rgba(139,58,82,0.25);}",
+      // 6. 紫色印泥 - 紫底+粗顶边
+      "." + ROOT_CLASS + " .dms-sticky.note-6{background:#E1D5F0;transform:rotate(-1.5deg);border-top:5px solid #7B1FA2;border-radius:2px 2px 8px 8px;color:#4A2862;box-shadow:0 2px 8px rgba(123,31,162,0.25);font-style:italic;}",
+      // 7. 珊瑚童趣 - 橙底+波浪边
+      "." + ROOT_CLASS + " .dms-sticky.note-7{background:#FFCCBC;transform:rotate(0.8deg);border-radius:8px 16px 8px 16px;color:#BF4A2A;box-shadow:2px 3px 10px rgba(255,87,34,0.25);font-weight:500;}",
+      // 8. 薄荷药签 - 青底+左侧折角
+      "." + ROOT_CLASS + " .dms-sticky.note-8{background:linear-gradient(135deg,#B2DFDB 0%,#80CBC4 100%);transform:rotate(-1deg);border-radius:0 12px 12px 0;color:#1A4A44;padding:10px 14px 10px 16px;box-shadow:0 2px 8px rgba(26,74,68,0.3);}",
+      "." + ROOT_CLASS + " .dms-sticky.note-8::before{content:'';position:absolute;top:0;left:0;width:10px;height:50%;background:rgba(255,255,255,0.3);border-radius:0 0 8px 0;}",
+      // 9. 柠黄信封 - 黄底+双线边
+      "." + ROOT_CLASS + " .dms-sticky.note-9{background:#F5F4C3;transform:rotate(1deg);border:1px solid #827717;outline:2px solid #827717;outline-offset:-5px;border-radius:2px;color:#3D3517;box-shadow:3px 3px 0 #827717,5px 5px 10px rgba(130,119,23,0.25);}",
+      // user 自定义样式：.dms-sticky.custom-{id}
       "." + ROOT_CLASS + " .dms-sticky-remove{",
       "  position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;",
       "  background:var(--red);color:#FAF3E3;font-size:10px;display:flex;align-items:center;justify-content:center;",
-      "  cursor:pointer;border:none;",
+      "  cursor:pointer;border:none;z-index:10;",
       "}",
-      "." + ROOT_CLASS + " .dms-sticky-style-picker{display:flex;gap:6px;flex-wrap:wrap;padding:6px;}",
-      "." + ROOT_CLASS + " .dms-sticky-style-item{width:28px;height:28px;border-radius:4px;cursor:pointer;border:2px solid transparent;transition:all .15s;}",
+      "." + ROOT_CLASS + " .dms-sticky-style-picker{display:flex;gap:6px;flex-wrap:wrap;padding:6px;align-items:center;}",
+      "." + ROOT_CLASS + " .dms-sticky-style-item{width:30px;height:30px;border-radius:4px;cursor:pointer;border:2px solid transparent;transition:all .15s;position:relative;overflow:hidden;font-size:9px;display:flex;align-items:center;justify-content:center;text-align:center;}",
       "." + ROOT_CLASS + " .dms-sticky-style-item.active{border-color:var(--red);transform:scale(1.15);}",
+      "." + ROOT_CLASS + " .dms-sticky-style-item.custom-item{background:var(--paper-2);border:2px dashed var(--ink-mute);color:var(--ink-dim);font-size:10px;}",
+      "." + ROOT_CLASS + " .dms-sticky-style-item.custom-item.active{border-color:var(--red);border-style:solid;}",
       "",
       "/* ===== 工具栏 ===== */",
       "." + ROOT_CLASS + " .dms-toolbar{",
@@ -928,49 +1015,94 @@
         : "\u672a\u9009\u62e9\u4f1a\u8bdd";
       var rightBtns = [];
 
+      // 手账风格图标按钮：用小符号代替大块按钮，更融入整体
+      function iconBtn(opts) {
+        var cls = "dms-foot-btn " + (opts.primary ? "dms-foot-btn-primary" : "") + (opts.disabled ? " disabled" : "");
+        var children = [];
+        if (opts.loading) children.push(el("span", { class: "dms-loading dms-loading-sm" }));
+        else if (opts.icon) children.push(el("span", { class: "dms-foot-btn-icon" }, [opts.icon]));
+        if (opts.label) children.push(el("span", { class: "dms-foot-btn-label" }, [opts.label]));
+        var btn = el("button", { class: cls, disabled: !!opts.disabled, onclick: opts.onclick }, children);
+        return btn;
+      }
+
       if (state.view === "cover") {
-        var coverBtnLabel = state.settings.swapMode
-          ? (state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u5199\u6211\u7684\u65e5\u8bb0")
-          : (state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u7ffb\u5f00\u8fd9\u4e00\u9875");
-        rightBtns.push(el("button", {
-          class: "dms-btn dms-btn-primary",
-          disabled: !state.selectedConv || state.generating,
-          onclick: function () { onOpenDiary(); }
-        }, coverBtnLabel));
+        if (state.settings.swapMode) {
+          rightBtns.push(iconBtn({
+            primary: true,
+            disabled: !state.selectedConv || state.generating,
+            loading: state.generating,
+            icon: state.generating ? null : "\u270d",
+            label: state.generating ? (state.generatingMsg || "\u5199\u4e2d") : "\u5199\u6211\u7684\u65e5\u8bb0",
+            onclick: function () { onOpenDiary(); }
+          }));
+        } else {
+          rightBtns.push(iconBtn({
+            primary: true,
+            disabled: !state.selectedConv || state.generating,
+            loading: state.generating,
+            icon: state.generating ? null : "\u27a7",
+            label: state.generating ? (state.generatingMsg || "\u5199\u4e2d") : "\u7ffb\u5f00\u8fd9\u4e00\u9875",
+            onclick: function () { onOpenDiary(); }
+          }));
+        }
       } else if (state.view === "diary") {
         // 交换模式 userWrite 子视图
         if (state.settings.swapMode && state.subView === "userWrite") {
-          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
-            state.view = "cover"; state.lastError = ""; state.subView = null;
-            // 不丢弃已写的草稿，但回到封面
-            renderContent();
-          } }, ["\u5c01\u9762"]));
-          rightBtns.push(el("button", {
-            class: "dms-btn dms-btn-primary dms-btn-sm",
+          rightBtns.push(iconBtn({
+            icon: "\u2630",
+            label: "\u5c01\u9762",
+            onclick: function () {
+              state.view = "cover"; state.lastError = ""; state.subView = null;
+              renderContent();
+            }
+          }));
+          rightBtns.push(iconBtn({
+            primary: true,
             disabled: state.generating,
+            loading: state.generating,
+            icon: state.generating ? null : "\u27a8",
+            label: state.generating ? (state.generatingMsg || "\u5199\u4e2d") : "\u5199\u597d\u4e86\uff0c\u7ed9TA\u770b",
             onclick: function () { onUserDiaryDone(); }
-          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u5199\u597d\u4e86\uff0c\u7ed9TA\u770b"]));
+          }));
         } else if (state.settings.swapMode && state.subView === "charDiary") {
-          // 交换模式 charDiary 子视图
-          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
-            state.view = "cover"; state.lastError = ""; state.subView = null; renderContent();
-          } }, ["\u5c01\u9762"]));
-          rightBtns.push(el("button", {
-            class: "dms-btn dms-btn-primary dms-btn-sm",
+          rightBtns.push(iconBtn({
+            icon: "\u2630",
+            label: "\u5c01\u9762",
+            onclick: function () {
+              state.view = "cover"; state.lastError = ""; state.subView = null; renderContent();
+            }
+          }));
+          rightBtns.push(iconBtn({
+            primary: true,
             disabled: state.generating,
+            loading: state.generating,
+            icon: state.generating ? null : "\u21bb",
+            label: state.generating ? (state.generatingMsg || "\u5199\u4e2d") : "\u91cd\u5199TA\u65e5\u8bb0",
             onclick: function () { onOpenDiary(true); }
-          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199TA\u65e5\u8bb0"]));
+          }));
         } else {
           // 非交换模式日记视图
-          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; state.lastError = ""; state.subView = null; renderContent(); } }, ["\u5c01\u9762"]));
-          rightBtns.push(el("button", {
-            class: "dms-btn dms-btn-primary dms-btn-sm",
+          rightBtns.push(iconBtn({
+            icon: "\u2630",
+            label: "\u5c01\u9762",
+            onclick: function () { state.view = "cover"; state.lastError = ""; state.subView = null; renderContent(); }
+          }));
+          rightBtns.push(iconBtn({
+            primary: true,
             disabled: state.generating,
+            loading: state.generating,
+            icon: state.generating ? null : "\u21bb",
+            label: state.generating ? (state.generatingMsg || "\u5199\u4e2d") : "\u91cd\u5199",
             onclick: function () { onOpenDiary(true); }
-          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199"]));
+          }));
         }
       } else if (state.view === "history") {
-        rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; renderContent(); } }, ["\u8fd4\u56de"]));
+        rightBtns.push(iconBtn({
+          icon: "\u2039",
+          label: "\u8fd4\u56de",
+          onclick: function () { state.view = "cover"; renderContent(); }
+        }));
       }
 
       return el("div", { class: "dms-footer" }, [
@@ -1420,43 +1552,35 @@
     // 把带【块X】标记的文本解析成 [{id:"A", title:"块A", content:"..."}]
     // 若无块标记，整体作为一块返回
     function parseBlocks(text) {
+      // 按纯换行分段（连续空行合并），每段即一个"段落"，便签/表情包吸附相邻段落
       if (!text) return [];
-      var lines = text.split("\n");
+      var rawBlocks = text.split(/\n+/);
       var blocks = [];
-      var cur = null;
-      var blockRe = /^\u3010\u5757([A-Za-z\u4e00-\u9fa5])\u3011\s*$/;
-      lines.forEach(function (line) {
-        var m = line.match(blockRe);
-        if (m) {
-          if (cur) blocks.push(cur);
-          var bid = m[1];
-          cur = { id: bid, title: "\u5757" + bid, content: "" };
-        } else {
-          if (!cur) {
-            cur = { id: "_main", title: "", content: "" };
-          }
-          cur.content += (cur.content ? "\n" : "") + line;
-        }
+      var globalPos = 0;
+      rawBlocks.forEach(function (line, idx) {
+        var content = line.trim();
+        if (!content) { globalPos += line.length + 1; return; }
+        blocks.push({
+          id: "p" + idx,               // 段落 id
+          idx: idx,
+          content: content,
+          start: globalPos,
+          end: globalPos + line.length
+        });
+        globalPos += line.length + 1; // +1 for newline
       });
-      if (cur) blocks.push(cur);
-      // 去掉每块首尾空行
-      blocks.forEach(function (b) { b.content = b.content.replace(/^\n+/, "").replace(/\n+$/, ""); });
       return blocks;
     }
 
-    // 把整段 text 的字符位置 → 转成 [blockId, 块内偏移]
-    // 用于给批注/sticker 关联块
+    // 全局字符位置 → 段落 id（用于批注/sticker 关联段落）
     function blockOfPos(blocks, globalPos) {
-      var acc = 0;
       for (var i = 0; i < blocks.length; i++) {
-        var len = blocks[i].content.length + 1; // +1 for newline
-        if (globalPos <= acc + len) return blocks[i].id;
-        acc += len;
+        if (globalPos < blocks[i].end) return blocks[i].id;
       }
-      return blocks.length ? blocks[blocks.length - 1].id : "_main";
+      return blocks.length ? blocks[blocks.length - 1].id : null;
     }
 
-    /* ---------- 批注渲染（支持分块） ---------- */
+    /* ---------- 批注渲染（按段落） ---------- */
     function renderAnnotatedText(container, text, annotations) {
       container.innerHTML = "";
       if (!text) {
@@ -1465,7 +1589,6 @@
       }
 
       var blocks = parseBlocks(text);
-      var hasBlocks = blocks.length > 1 || (blocks.length === 1 && blocks[0].id !== "_main");
 
       var textAnnots = (annotations || []).filter(function (a) {
         return a.selectedText && a.type !== "sticky";
@@ -1481,32 +1604,25 @@
       }).filter(function (a) { return a.start >= 0; })
         .sort(function (a, b) { return a.start - b.start; });
 
-      if (!hasBlocks) {
-        // 无块标记，走老逻辑（单段）
-        renderPlainAnnotated(container, text, textAnnots);
-        return;
-      }
-
-      // 有块标记：按块渲染（自然融入手账风格，不显示突兀的块号标签）
+      // 按段落渲染（每段就是一段连续文字，便签/贴纸吸附段落末端）
       var globalPos = 0;
       blocks.forEach(function (blk, idx) {
-        // 块之间用淡分隔线区隔，像段落
         var blockWrap = el("div", {
           class: "dms-block" + (idx > 0 ? " dms-block-gap" : ""),
           "data-block-id": blk.id,
-          "data-block-title": blk.title
+          "data-paragraph-idx": blk.idx
         });
         var blockText = el("div", { class: "dms-block-text" });
-        // 该块内的批注
+        // 该段内的批注
         var blockAnnots = textAnnots.filter(function (a) { return a.blockId === blk.id; });
+        var localStartBase = blk.start;
         renderPlainAnnotated(blockText, blk.content, blockAnnots.map(function (a) {
-          // 把全局位置转成块内位置
-          var localStart = a.start - globalPos;
+          var localStart = a.start - localStartBase;
           return Object.assign({}, a, { start: localStart, end: localStart + a.selectedText.length });
         }));
         blockWrap.appendChild(blockText);
         container.appendChild(blockWrap);
-        globalPos += blk.content.length + 1; // +1 for the newline between blocks
+        globalPos = blk.end + 1;
       });
     }
 
@@ -1673,31 +1789,36 @@
       saveCurrentDiary();
     }
 
-    /* 10款内置便签样式配置 */
+    /* 10款内置便签样式配置 - 每款完全不同的风格 */
     var STICKY_STYLES = [
-      { id: 0, name: "暖黄", color: "#FFE4A0", css: "note-0" },
-      { id: 1, name: "樱粉", color: "#FFCDD2", css: "note-1" },
-      { id: 2, name: "嫩绿", color: "#C8E6C9", css: "note-2" },
-      { id: 3, name: "天蓝", color: "#BBDEFB", css: "note-3" },
-      { id: 4, name: "米黄", color: "#FFF9C4", css: "note-4" },
-      { id: 5, name: "桃红", color: "#F8BBD0", css: "note-5" },
-      { id: 6, name: "薰衣草", color: "#D1C4E9", css: "note-6" },
-      { id: 7, name: "珊瑚", color: "#FFCCBC", css: "note-7" },
-      { id: 8, name: "薄荷", color: "#B2DFDB", css: "note-8" },
-      { id: 9, name: "柠香", color: "#F0F4C3", css: "note-9" }
+      { id: 0, name: "便利贴", color: "#FFE4A0", css: "note-0", desc: "经典暖黄+胶带感" },
+      { id: 1, name: "樱花笺", color: "#FFE0E6", css: "note-1", desc: "粉色圆角+蕾丝边" },
+      { id: 2, name: "牛皮纸", color: "#D4B896", css: "note-2", desc: "复古棕底+左色带" },
+      { id: 3, name: "拍立得", color: "#FAF8F0", css: "note-3", desc: "白底+下宽边相纸" },
+      { id: 4, name: "胶带条", color: "#FFF9C4", css: "note-4", desc: "半透明+顶胶带" },
+      { id: 5, name: "糖果圆", color: "#F8BBD0", css: "note-5", desc: "大圆角+渐变粉" },
+      { id: 6, name: "紫印泥", color: "#E1D5F0", css: "note-6", desc: "紫底+粗顶边斜体" },
+      { id: 7, name: "童趣橙", color: "#FFCCBC", css: "note-7", desc: "橙底+波浪圆角" },
+      { id: 8, name: "药签", color: "#B2DFDB", css: "note-8", desc: "青底+左侧折角" },
+      { id: 9, name: "柠信封", color: "#F5F4C3", css: "note-9", desc: "黄底+双线边" }
     ];
 
     function makeStickyNote(annot, pageEl) {
       var styleId = annot.styleId != null ? annot.styleId : 0;
       var styleConfig = STICKY_STYLES[styleId] || STICKY_STYLES[0];
-      var stickyClass = "dms-sticky " + styleConfig.css;
+      var stickyClass = "dms-sticky ";
       var stickyStyle = { left: annot.x + "px", top: annot.y + "px" };
-      // 自定义颜色覆盖
-      if (annot.customColor) stickyStyle.background = annot.customColor;
-      // 自定义字体
-      if (annot.customFont) stickyStyle.fontFamily = annot.customFont;
-      // 自定义字体颜色
-      if (annot.customTextColor) stickyStyle.color = annot.customTextColor;
+
+      if (annot.customStyleId != null) {
+        // user 自定义 CSS 样式
+        stickyClass += "custom-" + annot.customStyleId;
+      } else {
+        stickyClass += styleConfig.css;
+        // 兼容旧版的 customColor/customFont/customTextColor 内联覆盖
+        if (annot.customColor) stickyStyle.background = annot.customColor;
+        if (annot.customFont) stickyStyle.fontFamily = annot.customFont;
+        if (annot.customTextColor) stickyStyle.color = annot.customTextColor;
+      }
 
       var sticky = el("div", { class: stickyClass, style: stickyStyle });
       var text = el("div", { contentEditable: annot.byChar ? "false" : "true", style: { outline: "none", minHeight: "20px" } }, [annot.comment || (annot.byChar ? "" : "\u53cc\u51fb\u7f16\u8f91\u2026")]);
@@ -1780,62 +1901,87 @@
       if (old) old.remove();
       var popup = el("div", {
         class: "dms-sticker-picker dms-sticky-style-popup",
-        style: { position: "fixed", zIndex: "600", maxWidth: "300px" }
+        style: { position: "fixed", zIndex: "600", maxWidth: "340px", maxHeight: "80vh", overflowY: "auto" }
       });
       popup.appendChild(el("div", { class: "dms-sticker-picker-head" }, [
         el("span", { style: { fontSize: "12px", color: "var(--ink-mute)" } }, ["\u9009\u4fbf\u7b7e\u6837\u5f0f"]),
         el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { popup.remove(); } }, ["\u5173\u95ed"])
       ]));
-      // 10 款样式选择
+
+      // 10 款内置样式选择（每款展示名字+迷你预览）
+      popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "6px 2px 2px" } }, ["\u5185\u7f6e\u6837\u5f0f"]));
       var styleGrid = el("div", { class: "dms-sticky-style-picker" });
       STICKY_STYLES.forEach(function (st) {
+        var isActive = (annot.customStyleId == null && annot.styleId === st.id);
         var item = el("div", {
-          class: "dms-sticky-style-item" + (annot.styleId === st.id ? " active" : ""),
+          class: "dms-sticky-style-item" + (isActive ? " active" : ""),
           style: { background: st.color },
-          title: st.name,
+          title: st.name + " - " + st.desc,
           onclick: function () {
             annot.styleId = st.id;
-            annot.customColor = null; // 选内置样式时清除自定义颜色
+            annot.customStyleId = null;
+            annot.customColor = null;
+            annot.customFont = null;
+            annot.customTextColor = null;
             stickyEl.className = "dms-sticky " + st.css;
             stickyEl.style.background = "";
+            stickyEl.style.color = "";
+            stickyEl.style.fontFamily = "";
             saveCurrentDiary();
             popup.remove();
           }
-        });
+        }, [st.name]);
         styleGrid.appendChild(item);
       });
       popup.appendChild(styleGrid);
 
-      // 自定义颜色
-      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u81ea\u5b9a\u4e49\u989c\u8272"]));
-      var colorInput = el("input", {
-        type: "color", value: annot.customColor || "#FFE4A0",
-        style: { width: "100%", height: "30px", marginTop: "4px" },
-        oninput: function () {
-          annot.customColor = this.value;
-          stickyEl.style.background = this.value;
+      // user 自定义 CSS 样式
+      popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "10px 2px 2px" } }, ["\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
+      getCustomNoteStyles().then(function (customList) {
+        if (!customList.length) {
+          popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", padding: "4px 2px" } }, ["\u8fd8\u6ca1\u6709\u81ea\u5b9a\u4e49\u6837\u5f0f\uff0c\u70b9\u4e0b\u65b9\u201c+ \u65b0\u5efa\u201d\u6dfb\u52a0\u3002"]));
+        } else {
+          var customGrid = el("div", { class: "dms-sticky-style-picker" });
+          customList.forEach(function (cs) {
+            var isActive = (annot.customStyleId === cs.id);
+            var item = el("div", {
+              class: "dms-sticky-style-item custom-item" + (isActive ? " active" : ""),
+              title: cs.name,
+              onclick: function () {
+                annot.customStyleId = cs.id;
+                annot.styleId = null;
+                stickyEl.className = "dms-sticky custom-" + cs.id;
+                stickyEl.style.background = "";
+                stickyEl.style.color = "";
+                stickyEl.style.fontFamily = "";
+                saveCurrentDiary();
+                popup.remove();
+              }
+            }, [cs.name]);
+            customGrid.appendChild(item);
+          });
+          popup.appendChild(customGrid);
         }
-      });
-      popup.appendChild(colorInput);
 
-      // 自定义字体颜色
-      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u5b57\u4f53\u989c\u8272"]));
-      var textColorInput = el("input", {
-        type: "color", value: annot.customTextColor || "#3a2818",
-        style: { width: "100%", height: "30px", marginTop: "4px" },
-        oninput: function () {
-          annot.customTextColor = this.value;
-          stickyEl.style.color = this.value;
-        }
+        // 新建自定义样式按钮
+        popup.appendChild(el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-ghost",
+          style: { marginTop: "6px", width: "100%" },
+          onclick: function () {
+            openCustomNoteEditor(null, function () {
+              popup.remove();
+              showStickyStylePicker(annot, stickyEl);
+            });
+          }
+        }, ["+ \u65b0\u5efa\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
       });
-      popup.appendChild(textColorInput);
 
-      // 自定义字体（URL 导入）
-      popup.appendChild(el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, ["\u5b57\u4f53 URL\uff08\u53ef\u9009\uff09"]));
+      // 字体 URL 导入（应用到当前便签）
+      popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "10px 2px 2px" } }, ["\u5b57\u4f53 URL\uff08\u53ef\u9009\uff0c\u4ec5\u5f53\u524d\u4fbf\u7b7e\uff09"]));
       var fontInput = el("input", {
-        type: "text", placeholder: "https://fonts.googleapis.com/...",
+        type: "text", placeholder: "https://fonts.googleapis.com/... \u6216 .woff/.ttf \u76f4\u94fe",
         value: annot.customFontUrl || "",
-        style: { width: "100%", padding: "4px 8px", fontSize: "11px", marginTop: "4px", border: "1px solid var(--line)", borderRadius: "4px" },
+        style: { width: "100%", padding: "4px 8px", fontSize: "11px", marginTop: "2px", border: "1px solid var(--line)", borderRadius: "4px" },
         oninput: function () { annot.customFontUrl = this.value; }
       });
       popup.appendChild(fontInput);
@@ -1844,7 +1990,6 @@
         style: { marginTop: "4px", width: "100%" },
         onclick: function () {
           if (annot.customFontUrl) {
-            // 动态加载字体
             var fontName = "customFont" + Date.now();
             var css = "@font-face{font-family:'" + fontName + "';src:url('" + annot.customFontUrl + "');}";
             var styleEl = document.createElement("style");
@@ -1861,7 +2006,7 @@
 
       // 定位到便签附近
       var rect = stickyEl.getBoundingClientRect();
-      popup.style.left = Math.min(rect.left, window.innerWidth - 320) + "px";
+      popup.style.left = Math.min(rect.left, window.innerWidth - 360) + "px";
       popup.style.top = (rect.bottom + 4) + "px";
       document.body.appendChild(popup);
       setTimeout(function () {
@@ -1869,6 +2014,109 @@
           if (!popup.contains(ev.target)) { popup.remove(); document.removeEventListener("mousedown", close); }
         });
       }, 0);
+    }
+
+    /* ---------- 自定义便签样式编辑器 ---------- */
+    function openCustomNoteEditor(existing, onDone) {
+      var overlay = el("div", {
+        class: "dms-sync-overlay",
+        style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
+      });
+      var dlg = el("div", {
+        class: "dms-card tape-blue",
+        style: { width: "90%", maxWidth: "500px", maxHeight: "85vh", overflowY: "auto", padding: "16px" }
+      });
+      var isNew = !existing;
+      var data = existing ? JSON.parse(JSON.stringify(existing)) : { id: "cn" + Date.now(), name: "", css: "" };
+
+      dlg.appendChild(el("div", { class: "dms-page-header", style: { marginBottom: "10px" } }, [
+        el("div", { class: "dms-page-title" }, [isNew ? "\u65b0\u5efa\u81ea\u5b9a\u4e49\u4fbf\u7b7e\u6837\u5f0f" : "\u7f16\u8f91\u81ea\u5b9a\u4e49\u6837\u5f0f"]),
+        el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { overlay.remove(); } }, ["\u5173\u95ed"])
+      ]));
+
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", marginBottom: "4px" } }, ["\u6837\u5f0f\u540d\u79f0"]));
+      var nameInput = el("input", { class: "dms-input", placeholder: "\u5982\uff1a\u68a6\u5e7b\u6d6e\u5149\u3001\u661f\u7a7a\u6f02\u6d41", value: data.name, style: { width: "100%" } });
+      dlg.appendChild(nameInput);
+
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", margin: "10px 0 4px" } }, ["CSS \u4ee3\u7801"]));
+      var hint = el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", marginBottom: "4px" } }, ["\u8fd9\u91cc\u5199\u7684 CSS \u4f1a\u88ab\u5e94\u7528\u5230 .dms-sticky \u5143\u7d20\u4e0a\u3002\u53ef\u4f7f\u7528 background / border / box-shadow / transform / font-family \u7b49\u5c5e\u6027\u3002"]);
+      dlg.appendChild(hint);
+      var cssArea = el("textarea", {
+        class: "dms-textarea",
+        placeholder: "background:linear-gradient(135deg,#FFD1DC,#FFE5F0);\nborder-radius:16px;\nbox-shadow:0 0 12px rgba(255,200,220,0.6),inset 0 0 8px #fff;\ntransform:rotate(-2deg);\nfont-family:'KaiTi',cursive;",
+        style: { width: "100%", minHeight: "140px", fontFamily: "monospace", fontSize: "11px", whiteSpace: "pre" }
+      });
+      cssArea.value = data.css || "";
+      dlg.appendChild(cssArea);
+
+      // 实时预览
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", margin: "10px 0 4px" } }, ["\u9884\u89c8"]));
+      var previewWrap = el("div", { style: { position: "relative", height: "80px", background: "var(--paper-2)", borderRadius: "4px", padding: "10px", overflow: "hidden" } });
+      var previewNote = el("div", { class: "dms-sticky custom-" + data.id, style: { position: "relative", left: "20px", top: "10px" } }, ["\u8fd9\u91cc\u662f\u9884\u89c8\u6587\u5b57\u2026"]);
+      previewWrap.appendChild(previewNote);
+      dlg.appendChild(previewWrap);
+
+      function updatePreview() {
+        // 更新 preview 样式
+        var tag = document.getElementById(STYLE_ID + "-preview-custom");
+        if (!tag) {
+          tag = document.createElement("style");
+          tag.id = STYLE_ID + "-preview-custom";
+          document.head.appendChild(tag);
+        }
+        tag.textContent = "." + ROOT_CLASS + " .dms-sticky.custom-" + data.id + "{" + (cssArea.value || "") + "}";
+      }
+      cssArea.addEventListener("input", updatePreview);
+      updatePreview();
+
+      dlg.appendChild(el("div", { style: { display: "flex", gap: "8px", marginTop: "12px" } }, [
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-primary",
+          style: { flex: "1" },
+          onclick: function () {
+            if (!nameInput.value.trim()) { toast("\u8bf7\u586b\u540d\u79f0"); return; }
+            data.name = nameInput.value.trim();
+            data.css = cssArea.value;
+            getCustomNoteStyles().then(function (list) {
+              var idx = list.findIndex(function (x) { return x.id === data.id; });
+              if (idx >= 0) list[idx] = data; else list.push(data);
+              return saveCustomNoteStyles(list).then(function () {
+                applyCustomNoteStyles(list);
+                toast("\u5df2\u4fdd\u5b58");
+                overlay.remove();
+                if (onDone) onDone();
+              });
+            });
+          }
+        }, ["\u4fdd\u5b58"]),
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-ghost",
+          onclick: function () { overlay.remove(); }
+        }, ["\u53d6\u6d88"])
+      ]));
+
+      // 删除按钮（仅编辑时）
+      if (!isNew) {
+        dlg.appendChild(el("button", {
+          class: "dms-btn dms-btn-sm",
+          style: { marginTop: "6px", width: "100%", color: "var(--red)" },
+          onclick: function () {
+            getCustomNoteStyles().then(function (list) {
+              var filtered = list.filter(function (x) { return x.id !== data.id; });
+              return saveCustomNoteStyles(filtered).then(function () {
+                applyCustomNoteStyles(filtered);
+                toast("\u5df2\u5220\u9664");
+                overlay.remove();
+                if (onDone) onDone();
+              });
+            });
+          }
+        }, ["\u5220\u9664\u8be5\u6837\u5f0f"]));
+      }
+
+      overlay.appendChild(dlg);
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+      document.body.appendChild(overlay);
     }
 
     /* ---------- 表情包贴纸（贴到日记上） ---------- */
@@ -2071,6 +2319,156 @@
       });
     }
 
+    /* ---------- 预设栏（思维链/格式多预设管理） ---------- */
+    function buildPresetBar(kind) {
+      // kind: "char" | "user"
+      var bar = el("div", { class: "dms-preset-bar", style: { display: "flex", gap: "6px", alignItems: "center", marginBottom: "6px", flexWrap: "wrap" } });
+      bar.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u9884\u8bbe:"]));
+
+      getPresets().then(function (presets) {
+        var list = (kind === "char") ? presets.charPresets : presets.userPresets;
+        if (!list.length) {
+          bar.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u8fd8\u6ca1\u6709"]));
+        } else {
+          list.forEach(function (p) {
+            var btn = el("button", {
+              class: "dms-btn dms-btn-sm dms-btn-ghost",
+              title: "\u70b9\u51fb\u5e94\u7528\u9884\u8bbe",
+              style: { fontSize: "11px", padding: "3px 8px" },
+              onclick: function () {
+                if (kind === "char") {
+                  state.settings.charThinkingChain = p.chain || "";
+                  state.settings.charFormat = p.format || "";
+                } else {
+                  state.settings.userThinkingChain = p.chain || "";
+                  state.settings.userFormat = p.format || "";
+                }
+                saveSettings(roche, state.settings).then(function () {
+                  toast("\u5df2\u5e94\u7528\u9884\u8bbe");
+                  toggleSettings(true); renderContent();
+                });
+              }
+            }, [p.name]);
+            // 长按/右键编辑
+            var pressTimer = null;
+            btn.addEventListener("mousedown", function () {
+              pressTimer = setTimeout(function () {
+                pressTimer = null;
+                openPresetEditor(kind, p, function () {
+                  toggleSettings(true); renderContent();
+                });
+              }, 500);
+            });
+            btn.addEventListener("mouseup", function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+            btn.addEventListener("mouseleave", function () { if (pressTimer) { clearTimeout(pressTimer); pressTimer = null; } });
+            btn.addEventListener("contextmenu", function (ev) {
+              ev.preventDefault();
+              openPresetEditor(kind, p, function () { toggleSettings(true); renderContent(); });
+            });
+            bar.appendChild(btn);
+          });
+        }
+        // 新建按钮
+        bar.appendChild(el("button", {
+          class: "dms-btn dms-btn-sm",
+          style: { fontSize: "11px", padding: "3px 8px" },
+          onclick: function () { openPresetEditor(kind, null, function () { toggleSettings(true); renderContent(); }); }
+        }, ["+ \u4fdd\u5b58\u5f53\u524d\u4e3a\u9884\u8bbe"]));
+      });
+
+      return bar;
+    }
+
+    /* ---------- 预设编辑器 ---------- */
+    function openPresetEditor(kind, existing, onDone) {
+      var overlay = el("div", {
+        class: "dms-sync-overlay",
+        style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
+      });
+      var dlg = el("div", {
+        class: "dms-card tape-blue",
+        style: { width: "90%", maxWidth: "440px", maxHeight: "85vh", overflowY: "auto", padding: "16px" }
+      });
+      var isNew = !existing;
+      var data = existing ? JSON.parse(JSON.stringify(existing)) : {
+        id: "p" + Date.now(),
+        name: "",
+        chain: (kind === "char") ? (state.settings.charThinkingChain || "") : (state.settings.userThinkingChain || ""),
+        format: (kind === "char") ? (state.settings.charFormat || "") : (state.settings.userFormat || "")
+      };
+
+      dlg.appendChild(el("div", { class: "dms-page-header", style: { marginBottom: "10px" } }, [
+        el("div", { class: "dms-page-title" }, [isNew ? "\u4fdd\u5b58\u4e3a\u9884\u8bbe" : "\u7f16\u8f91\u9884\u8bbe"]),
+        el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { overlay.remove(); } }, ["\u5173\u95ed"])
+      ]));
+
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", marginBottom: "4px" } }, ["\u9884\u8bbe\u540d\u79f0"]));
+      var nameInput = el("input", { class: "dms-input", placeholder: "\u5982\uff1a\u9ed8\u8ba4\u3001\u7b80\u6d01\u7248\u3001\u60c5\u611f\u7ec6\u817b\u7248", value: data.name, style: { width: "100%" } });
+      dlg.appendChild(nameInput);
+
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", margin: "10px 0 4px" } }, ["\u601d\u7ef4\u94fe"]));
+      var chainArea = el("textarea", { class: "dms-textarea", placeholder: "\u8bf7\u8f93\u5165\u601d\u7ef4\u94fe\u2026", style: { width: "100%", minHeight: "100px" } });
+      chainArea.value = data.chain || "";
+      dlg.appendChild(chainArea);
+
+      dlg.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", margin: "10px 0 4px" } }, ["\u8f93\u51fa\u683c\u5f0f"]));
+      var formatArea = el("textarea", { class: "dms-textarea", placeholder: "\u8f93\u51fa\u683c\u5f0f\u6307\u4ee4\u2026", style: { width: "100%", minHeight: "60px" } });
+      formatArea.value = data.format || "";
+      dlg.appendChild(formatArea);
+
+      dlg.appendChild(el("div", { style: { display: "flex", gap: "8px", marginTop: "12px" } }, [
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-primary",
+          style: { flex: "1" },
+          onclick: function () {
+            if (!nameInput.value.trim()) { toast("\u8bf7\u586b\u540d\u79f0"); return; }
+            data.name = nameInput.value.trim();
+            data.chain = chainArea.value;
+            data.format = formatArea.value;
+            getPresets().then(function (presets) {
+              var list = (kind === "char") ? presets.charPresets : presets.userPresets;
+              var idx = list.findIndex(function (x) { return x.id === data.id; });
+              if (idx >= 0) list[idx] = data; else list.push(data);
+              return savePresets(presets).then(function () {
+                toast("\u5df2\u4fdd\u5b58");
+                overlay.remove();
+                if (onDone) onDone();
+              });
+            });
+          }
+        }, ["\u4fdd\u5b58"]),
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-ghost",
+          onclick: function () { overlay.remove(); }
+        }, ["\u53d6\u6d88"])
+      ]));
+
+      // 删除按钮（仅编辑时）
+      if (!isNew) {
+        dlg.appendChild(el("button", {
+          class: "dms-btn dms-btn-sm",
+          style: { marginTop: "6px", width: "100%", color: "var(--red)" },
+          onclick: function () {
+            getPresets().then(function (presets) {
+              var list = (kind === "char") ? presets.charPresets : presets.userPresets;
+              var filtered = list.filter(function (x) { return x.id !== data.id; });
+              if (kind === "char") presets.charPresets = filtered;
+              else presets.userPresets = filtered;
+              return savePresets(presets).then(function () {
+                toast("\u5df2\u5220\u9664");
+                overlay.remove();
+                if (onDone) onDone();
+              });
+            });
+          }
+        }, ["\u5220\u9664\u8be5\u9884\u8bbe"]));
+      }
+
+      overlay.appendChild(dlg);
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+      document.body.appendChild(overlay);
+    }
+
     /* ---------- 设置面板 ---------- */
     function buildSettingsPanel() {
       var panel = el("div", { class: "dms-settings-panel" + (state.settingsOpen ? " open" : "") });
@@ -2099,11 +2497,12 @@
       if (state.settings.useWorldbook) sec1.appendChild(buildWbPicker());
       body.appendChild(sec1);
 
-      // TA的思维链
+      // TA的思维链（带预设栏）
       var sec2 = el("div", { class: "dms-settings-section" }, [
         el("h3", {}, ["TA\u7684\u601d\u7ef4\u94fe"]),
         el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["{{char}}\u4f1a\u88ab\u66ff\u6362\u4e3a\u89d2\u8272\u540d"])
       ]);
+      sec2.appendChild(buildPresetBar("char"));
       var tc = el("textarea", { class: "dms-textarea", placeholder: "\u8bf7\u8f93\u5165\u601d\u7ef4\u94fe\u2026" });
       tc.value = state.settings.charThinkingChain || "";
       tc.addEventListener("change", function () {
@@ -2118,6 +2517,27 @@
       });
       sec2.appendChild(cf);
       body.appendChild(sec2);
+
+      // user 的思维链（带预设栏）
+      var secUserChain = el("div", { class: "dms-settings-section" }, [
+        el("h3", {}, ["\u6211\u7684\u601d\u7ef4\u94fe"]),
+        el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["\u7528\u4e8e\u751f\u6210 user \u65e5\u8bb0\u7684\u601d\u7ef4\u94fe\uff08\u53ef\u9009\uff0c\u4e0d\u586b\u5219\u4e0d\u4f7f\u7528\uff09"])
+      ]);
+      secUserChain.appendChild(buildPresetBar("user"));
+      var utc = el("textarea", { class: "dms-textarea", placeholder: "\u8bf7\u8f93\u5165\u601d\u7ef4\u94fe\u2026" });
+      utc.value = state.settings.userThinkingChain || "";
+      utc.addEventListener("change", function () {
+        state.settings.userThinkingChain = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
+      });
+      secUserChain.appendChild(utc);
+      secUserChain.appendChild(el("div", { class: "dms-hint", style: { marginTop: "6px" } }, ["\u6211\u7684\u8f93\u51fa\u683c\u5f0f"]));
+      var ucf = el("textarea", { class: "dms-textarea", style: { minHeight: "60px" }, placeholder: "\u8f93\u51fa\u683c\u5f0f\u6307\u4ee4\u2026" });
+      ucf.value = state.settings.userFormat || "";
+      ucf.addEventListener("change", function () {
+        state.settings.userFormat = this.value; saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58");
+      });
+      secUserChain.appendChild(ucf);
+      body.appendChild(secUserChain);
 
       // 记忆同步
       var sec4 = el("div", { class: "dms-settings-section" }, [
@@ -2238,6 +2658,91 @@
     }
 
     /* ---------- 表情包库管理 ---------- */
+    /* ---------- 批量导入表情包对话框 ---------- */
+    function openBatchStickerDialog(group, onDone) {
+      var overlay = el("div", {
+        class: "dms-sync-overlay",
+        style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center" }
+      });
+      var dlg = el("div", {
+        class: "dms-card tape-blue",
+        style: { width: "90%", maxWidth: "460px", maxHeight: "85vh", overflowY: "auto", padding: "16px" }
+      });
+      dlg.appendChild(el("div", { class: "dms-page-header", style: { marginBottom: "10px" } }, [
+        el("div", { class: "dms-page-title" }, ["\u6279\u91cf\u5bfc\u5165\u8868\u60c5\u5305"]),
+        el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { overlay.remove(); } }, ["\u5173\u95ed"])
+      ]));
+      dlg.appendChild(el("div", { class: "dms-hint", style: { marginBottom: "8px" } }, [
+        "\u6bcf\u884c\u4e00\u6761\uff0c\u683c\u5f0f\uff1a",
+        el("br"),
+        el("code", { style: { fontSize: "11px", color: "var(--red)" } }, "\u63cf\u8ff0:URL"),
+        " \u6216\u76f4\u63a5\u8d34 URL\uff08\u63cf\u8ff0\u53ef\u7701\u7565\uff09",
+        el("br"),
+        "\u652f\u6301\u4e2d\u82f1\u6587\u5192\u53f7 \u3001\u5168\u89d2\u5192\u53f7 \uff1a \u4ee5\u53ca\u5236\u8868\u7b26 | \u4f5c\u4e3a\u5206\u9694\u7b26\u3002"
+      ]));
+
+      var area = el("textarea", {
+        class: "dms-textarea",
+        placeholder: "\u6708\u85aa\u55b5\u6652\u7194\u4e86:`https://cdn.imgos.cn/vip/2026/05/18/6a09f39b2734e.gif`\n\u6708\u85aa\u55b5\u542c\u6b4c:`https://cdn.imgos.cn/vip/2026/05/18/6a09f34aefaf1.gif`\n\u6708\u85aa\u55b5\u517b\u751f:`https://cdn.imgos.cn/vip/2026/05/18/6a09f34b35a6.gif`\nhttps://example.com/sticker.png",
+        style: { width: "100%", minHeight: "160px", fontFamily: "monospace", fontSize: "11px", whiteSpace: "pre" }
+      });
+      dlg.appendChild(area);
+
+      // 预览解析结果
+      var previewBox = el("div", { style: { marginTop: "8px", fontSize: "11px", color: "var(--ink-mute)" } }, []);
+      dlg.appendChild(previewBox);
+      function parseStickerLines(text) {
+        var lines = (text || "").split(/\r?\n/);
+        var items = [];
+        lines.forEach(function (line) {
+          var s = line.trim();
+          if (!s) return;
+          var m = s.match(/^(.+?)\s*[:\uff1a|\u00a6]\s*(https?:\/\/\S+)$/);
+          if (m) {
+            items.push({ caption: m[1].trim(), url: m[2].trim() });
+          } else if (s.match(/^https?:\/\/\S+$/)) {
+            items.push({ caption: "", url: s.trim() });
+          }
+        });
+        return items;
+      }
+      area.addEventListener("input", function () {
+        var items = parseStickerLines(area.value);
+        previewBox.textContent = "\u5c06\u5bfc\u5165 " + items.length + " \u4e2a\u8868\u60c5\u5305";
+      });
+
+      dlg.appendChild(el("div", { style: { display: "flex", gap: "8px", marginTop: "12px" } }, [
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-primary",
+          style: { flex: "1" },
+          onclick: function () {
+            var items = parseStickerLines(area.value);
+            if (!items.length) { toast("\u6ca1\u6709\u53ef\u5bfc\u5165\u7684\u8868\u60c5\u5305"); return; }
+            items.forEach(function (it) {
+              group.stickers.push({
+                id: "s" + Date.now() + Math.random().toString(36).slice(2, 6),
+                url: it.url,
+                caption: it.caption
+              });
+            });
+            saveStickerLib(roche, state.stickerLib).then(function () {
+              toast("\u5df2\u5bfc\u5165 " + items.length + " \u4e2a");
+              overlay.remove();
+              if (onDone) onDone();
+            });
+          }
+        }, ["\u5bfc\u5165"]),
+        el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-ghost",
+          onclick: function () { overlay.remove(); }
+        }, ["\u53d6\u6d88"])
+      ]));
+
+      overlay.appendChild(dlg);
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+      document.body.appendChild(overlay);
+    }
+
     function renderStickerLibManager(box) {
       box.innerHTML = "";
       getStickerLib(roche).then(function (lib) {
@@ -2305,15 +2810,10 @@
           });
           gcard.appendChild(grid);
 
-          // 添加表情包
-          var addBtn = el("button", { class: "dms-btn dms-btn-sm", style: { marginTop: "6px" } }, ["\u6dfb\u52a0\u8868\u60c5\u5305 (URL)"]);
+          // 添加表情包 - 支持批量导入（每行一条：描述:URL 或仅 URL）
+          var addBtn = el("button", { class: "dms-btn dms-btn-sm", style: { marginTop: "6px" } }, ["\u6dfb\u52a0\u8868\u60c5\u5305 (\u6279\u91cf)"]);
           addBtn.addEventListener("click", function () {
-            var url = window.prompt("\u8868\u60c5\u5305\u56fe\u7247URL\uff08https://...\uff09");
-            if (!url || !url.trim()) return;
-            var caption = window.prompt("\u7ed9\u8fd9\u4e2a\u8868\u60c5\u5305\u914d\u4e2a\u6587\u5b57\u8bf4\u660e\uff08\u5982\uff1a\u8c03\u76ae\u3001\u5f00\u5fc3\u3001\u5077\u7b11\uff09\uff0c\u53ef\u4e3a\u7a7a", "");
-            var st = { id: "s" + Date.now() + Math.random().toString(36).slice(2, 6), url: url.trim(), caption: (caption || "").trim() };
-            g.stickers.push(st);
-            saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); toast("\u5df2\u6dfb\u52a0"); });
+            openBatchStickerDialog(g, function () { renderStickerLibManager(box); });
           });
           gcard.appendChild(addBtn);
 
@@ -2896,7 +3396,7 @@
       });
     }
 
-    /* ---------- 拼装短期记忆注入文本（按分块联动便签/贴纸） ---------- */
+    /* ---------- 拼装短期记忆注入文本（按段落联动便签/贴纸） ---------- */
     function buildShortTermInjectText(diary) {
       if (!diary) return "";
       var charName = diary.charName || "TA";
@@ -2907,49 +3407,64 @@
       parts.push("\u3010\u4ea4\u6362\u65e5\u8bb0 \u00b7 " + dateKey + "\u3011");
       parts.push("\u4ee5\u4e0b\u662f " + userName + " \u548c " + charName + " \u4eca\u5929\u5199\u7ed9\u5bf9\u65b9\u770b\u7684\u4ea4\u6362\u65e5\u8bb0\u3002\u5305\u542b\u5f7c\u6b64\u7559\u4e0b\u7684\u4fbf\u7b7e\u4e0e\u8868\u60c5\u8d34\u7eb8\uff0c\u8bf7\u5728\u4e3b\u804a\u5929\u4e2d\u81ea\u7136\u5730\u56de\u5e94\u8fd9\u4e9b\u5185\u5bb9\u3002");
 
-      // ===== char 的日记 + user 给 char 留的便签/贴纸（按块关联）=====
+      // ===== char 的日记 + user 给 char 留的便签/贴纸（按段落关联）=====
       if (diary.charDiary && diary.charDiary.trim()) {
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + charName + " \u7ed9 " + userName + " \u7684\u65e5\u8bb0\u3011");
         var charBlocks = parseBlocks(diary.charDiary);
         var charAnnots = (diary.annotations || []).filter(function (a) { return a.type === "sticky"; });
         var charStickers = diary.stickers || [];
-        if (charBlocks.length > 1 || (charBlocks.length === 1 && charBlocks[0].id !== "_main")) {
-          charBlocks.forEach(function (blk) {
-            parts.push("\n\u3010\u5757" + blk.id + "\u3011");
-            parts.push(blk.content);
-            // 关联此块的便签
-            var blkAnnots = charAnnots.filter(function (a) { return a.blockId === blk.id; });
-            blkAnnots.forEach(function (a) {
-              parts.push("  \u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
-            });
-            // 关联此块的贴纸
-            var blkStk = charStickers.filter(function (s) { return s.blockId === blk.id; });
-            blkStk.forEach(function (s) {
-              parts.push("  \u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
-            });
+        // 没有段落的便签/贴纸（兜底）
+        var unboundAnnots = [];
+        var unboundStickers = [];
+        charBlocks.forEach(function (blk) {
+          parts.push("");
+          parts.push(blk.content);
+          var blkAnnots = charAnnots.filter(function (a) { return (a.blockId || null) === blk.id; });
+          blkAnnots.forEach(function (a) {
+            parts.push("  \u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
           });
-        } else {
-          // 无分块，整体注入
-          parts.push(diary.charDiary);
-          charAnnots.forEach(function (a) {
+          var blkStk = charStickers.filter(function (s) { return (s.blockId || null) === blk.id; });
+          blkStk.forEach(function (s) {
+            parts.push("  \u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+          });
+        });
+        // 没关联到段落的便签/贴纸放在末尾
+        unboundAnnots = charAnnots.filter(function (a) { return !a.blockId; });
+        unboundStickers = charStickers.filter(function (s) { return !s.blockId; });
+        if (unboundAnnots.length || unboundStickers.length) {
+          parts.push("");
+          unboundAnnots.forEach(function (a) {
             parts.push("\u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
           });
-          charStickers.forEach(function (s) {
+          unboundStickers.forEach(function (s) {
             parts.push("\u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
           });
         }
       }
 
-      // ===== user 的日记 + char 给 user 留的批注 =====
+      // ===== user 的日记 + char 给 user 留的便签 =====
       if (diary.userDiary && diary.userDiary.trim()) {
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + userName + " \u7ed9 " + charName + " \u7684\u65e5\u8bb0\u3011");
-        parts.push(diary.userDiary);
-        var charAnnots2 = (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; });
-        charAnnots2.forEach(function (a) {
-          parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+        var userBlocks = parseBlocks(diary.userDiary);
+        var userStickyFromChar = (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; });
+        userBlocks.forEach(function (blk) {
+          parts.push("");
+          parts.push(blk.content);
+          var blkAnnots = userStickyFromChar.filter(function (a) { return (a.blockId || null) === blk.id; });
+          blkAnnots.forEach(function (a) {
+            parts.push("  \u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+          });
         });
+        // 没关联到段落的 char 便签放在末尾
+        var unboundCharAnnots = userStickyFromChar.filter(function (a) { return !a.blockId; });
+        if (unboundCharAnnots.length) {
+          parts.push("");
+          unboundCharAnnots.forEach(function (a) {
+            parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+          });
+        }
       }
 
       return parts.join("\n");
@@ -3034,7 +3549,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.2.0",
+    version: "2.3.0",
     apps: [
       {
         id: "daily-memory-summary-home",
@@ -3043,6 +3558,8 @@
         iconImage: "",
         mount: function (container, roche) {
           ensureStyle();
+          // 加载 user 自定义便签样式
+          getCustomNoteStyles(roche).then(function (list) { applyCustomNoteStyles(list); }).catch(function () {});
           var root = document.createElement("div");
           root.className = ROOT_CLASS;
           getSettings(roche).then(function (settings) {

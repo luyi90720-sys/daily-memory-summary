@@ -1,7 +1,18 @@
 /*
- * 手账日记 (daily-memory-summary) v2.1.2
- * 手账本风格的每日日记 — char写日记，user手写日记，互相批注涂鸦。
+ * 手账日记 (daily-memory-summary) v2.2.0
+ * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
+ * v2.2.0:
+ *   - 删除绘画功能，保留便签与表情包
+ *   - 新增表情包系统：URL导入、分组管理、会话挂载、贴到日记
+ *   - 封面页新增"交换日记"开关，自选是否交换
+ *   - 交换模式流程：user先写日记 → 写好后让TA回写 → user给TA日记贴表情包/便签
+ *   - char日记分块（【块A】【块B】...），可针对块贴表情包/便签，方便后续char反应
+ *   - 同步选项对话框：生成后弹多选（事实记忆/短期记忆），可选"记住选择"
+ *   - 短期记忆同步：通过 RocheToolkit.simulateSystemNotice 把交换日记作为消息注入主聊天
+ *   - 手机端适配：600px 以下单列布局，触摸友好
+ *   - 修复事实记忆截断问题（不再 slice 到 800 字）
+ *   - 历史日记按 cid:dateKey 存储，重新生成自动覆盖
  * v2.1.2: 优化封面交互—会话列表限高滚动、选会话后自动滚动到日期卡并高亮、未选会话时日期卡显示引导提示
  * v2.1.1: 修复appendChild嵌套数组错误、移除事实记忆条数选择
  * v2.1.0: 删除AI代写user日记、修复生成状态提示、修复翻页失败可重试、修复选会话不重建
@@ -13,6 +24,7 @@
   var STYLE_ID = ROOT_CLASS + "-style";
   var STORAGE_SETTINGS = "dms-settings";
   var STORAGE_DIARIES = "dms-diaries";
+  var STORAGE_STICKERS = "dms-stickers";
 
   /* ---------- 默认设置 ---------- */
   var DEFAULT_SETTINGS = {
@@ -44,6 +56,12 @@
       "   - 直接以 {{char}} 的独白或日记形式开始，不要写“总结：”“剧情梗概：”这类标题。",
       "   - 整体读起来就像一段活生生的角色内心独白或回忆，保留情绪和悬念，别写成客观报告。",
       "",
+      "6. 分块书写（重要）",
+      "   - 将日记分成若干个语义独立的段落块，每块聚焦一个事件、场景或情绪转折。",
+      "   - 每块开头用【块A】【块B】【块C】……这样的标记单独占一行（按字母顺序递增，跳过不吉利的字母可省略）。",
+      "   - 每块内容 100~200 字左右，块与块之间用空行分隔，块标记行单独成行。",
+      "   - 块的数量控制在 3~6 块，不要过碎或过长。",
+      "",
       "其他要求：",
       "- 称呼user时，可以用ta",
       "- 在日记结尾，原样保留那些有趣或值得记下的、有情感价值的对话。提到了具体的歌名或作品的名字，也必须原样保留。",
@@ -52,9 +70,12 @@
       "- 字数限定在800字左右，聊天记录不在字数限定范围。",
       "- 必须在生成日记前进行思考，哪些对话是char发的，哪些对话是user发的，以事件、话题与情感来记录。"
     ].join("\n"),
-    charFormat: "请直接以 {{char}} 的第一人称写日记，不需要固定格式模板。按照思维链中的要求，写出一段800字左右的私人记录。",
+    charFormat: "请直接以 {{char}} 的第一人称写日记，按照思维链中的分块要求，用【块A】【块B】【块C】等标记把日记分成 3~6 个语义独立的段落块，每块 100~200 字。",
     syncToFactMemory: false,
+    syncToShortTerm: false,
+    rememberSyncChoice: false,
     autoSyncAfterGenerate: false,
+    swapMode: true,
     messageLimit: 5000
   };
 
@@ -314,13 +335,13 @@
     });
   }
 
-  /* ---------- 同步到事实记忆 ---------- */
+  /* ---------- 同步到事实记忆（修复截断：使用完整文本） ---------- */
   function syncFact(roche, ctx, text) {
     return roche.memory.write({
       conversationId: ctx.conversationId,
       summaryText: text,
       who: [ctx.userName, ctx.charName],
-      action: text.slice(0, 800),
+      action: text,
       when: ctx.dateKey,
       where: ctx.isGroup ? "\u7fa4\u804a" : "\u5355\u804a",
       source: "plugin:daily-memory-summary"
@@ -353,6 +374,34 @@
       delete all[key];
       return roche.storage.set(STORAGE_DIARIES, all);
     });
+  }
+
+  /* ---------- 表情包库存储 ----------
+   * 结构:
+   * { groups: [{id, name, stickers:[{id,url,caption}]}],
+   *   sessionGroups: { "<cid>": [groupId, ...] } }
+   * 一个会话可挂载多个组，被挂载组的表情包合并显示
+   */
+  function defaultStickerLib() {
+    return { groups: [], sessionGroups: {} };
+  }
+  function getStickerLib(roche) {
+    return roche.storage.get(STORAGE_STICKERS).then(function (s) {
+      return s || defaultStickerLib();
+    }).catch(function () { return defaultStickerLib(); });
+  }
+  function saveStickerLib(roche, lib) {
+    return roche.storage.set(STORAGE_STICKERS, lib);
+  }
+  // 取某会话挂载的所有组的表情包（合并）
+  function getStickersForConv(lib, cid) {
+    var ids = (lib.sessionGroups && lib.sessionGroups[cid]) || [];
+    var out = [];
+    ids.forEach(function (gid) {
+      var g = lib.groups.filter(function (x) { return x.id === gid; })[0];
+      if (g) out = out.concat(g.stickers || []);
+    });
+    return out;
   }
 
   /* ============================================================
@@ -586,7 +635,7 @@
       "",
       "/* ===== 日记页面 ===== */",
       "." + ROOT_CLASS + " .dms-diary-spread{display:flex;flex-direction:column;gap:16px;}",
-      "  @media(min-width:768px){",
+      "  @media(min-width:900px){",
       "  ." + ROOT_CLASS + " .dms-diary-spread{flex-direction:row;}",
       "  }",
       "." + ROOT_CLASS + " .dms-diary-page{",
@@ -610,6 +659,10 @@
       "  font-size:14px;line-height:32px;color:var(--ink);white-space:pre-wrap;word-break:break-word;",
       "  position:relative;",
       "}",
+      "/* 块：自然段落感，不显示块号标签 */",
+      "." + ROOT_CLASS + " .dms-block{position:relative;margin-bottom:10px;padding:2px 4px;transition:background .15s ease;}",
+      "." + ROOT_CLASS + " .dms-block-gap{margin-top:14px;padding-top:12px;border-top:1px dashed rgba(180,160,110,0.18);}",
+      "." + ROOT_CLASS + " .dms-block-text{font-size:14px;line-height:32px;}",
       "",
       "/* ===== 批注样式 ===== */",
       "." + ROOT_CLASS + " .dms-annot{position:relative;cursor:pointer;}",
@@ -650,12 +703,6 @@
       "  cursor:pointer;border:none;",
       "}",
       "",
-      "/* ===== 涂鸦画布 ===== */",
-      "." + ROOT_CLASS + " .dms-doodle-canvas{",
-      "  position:absolute;top:0;left:0;width:100%;height:100%;z-index:4;pointer-events:none;",
-      "}",
-      "." + ROOT_CLASS + " .dms-doodle-canvas.active{pointer-events:auto;cursor:crosshair;}",
-      "",
       "/* ===== 工具栏 ===== */",
       "." + ROOT_CLASS + " .dms-toolbar{",
       "  display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:8px 10px;",
@@ -667,11 +714,38 @@
       "}",
       "." + ROOT_CLASS + " .dms-tool-btn:hover{background:var(--paper-3);}",
       "." + ROOT_CLASS + " .dms-tool-btn.active{background:var(--red);color:#FAF3E3;border-color:transparent;}",
-      "." + ROOT_CLASS + " .dms-color-dot{",
-      "  width:20px;height:20px;border-radius:50%;cursor:pointer;border:2px solid transparent;",
-      "  display:inline-block;transition:all .15s ease;",
+      "",
+      "/* ===== 表情包库 ===== */",
+      "." + ROOT_CLASS + " .dms-sticker-box{margin-top:8px;}",
+      "." + ROOT_CLASS + " .dms-sticker-group{background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-sm);padding:10px;margin-bottom:8px;}",
+      "." + ROOT_CLASS + " .dms-sticker-group-head{display:flex;gap:6px;align-items:center;margin-bottom:8px;}",
+      "." + ROOT_CLASS + " .dms-sticker-group-name{padding:4px 8px;}",
+      "." + ROOT_CLASS + " .dms-sticker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(72px,1fr));gap:6px;}",
+      "." + ROOT_CLASS + " .dms-sticker-cell{position:relative;background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-sm);padding:4px;display:flex;flex-direction:column;align-items:center;gap:2px;}",
+      "." + ROOT_CLASS + " .dms-sticker-img{width:56px;height:56px;object-fit:contain;}",
+      "." + ROOT_CLASS + " .dms-sticker-caption{font-size:10px;color:var(--ink-mute);text-align:center;line-height:1.2;word-break:break-all;max-height:24px;overflow:hidden;}",
+      "." + ROOT_CLASS + " .dms-sticker-cell-del{position:absolute;top:2px;right:2px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#FAF3E3;font-size:10px;border:none;cursor:pointer;display:none;}",
+      "." + ROOT_CLASS + " .dms-sticker-cell:hover .dms-sticker-cell-del{display:block;}",
+      "",
+      "/* ===== 日记贴纸（贴到日记上的表情包）===== */",
+      "." + ROOT_CLASS + " .dms-sticker{position:absolute;width:64px;height:64px;cursor:grab;z-index:6;user-select:none;}",
+      "." + ROOT_CLASS + " .dms-sticker img{width:100%;height:100%;object-fit:contain;pointer-events:none;}",
+      "." + ROOT_CLASS + " .dms-sticker-cap{position:absolute;bottom:-14px;left:50%;transform:translateX(-50%);font-size:9px;color:var(--ink-mute);background:var(--paper);padding:0 4px;border-radius:3px;white-space:nowrap;max-width:80px;overflow:hidden;text-overflow:ellipsis;}",
+      "." + ROOT_CLASS + " .dms-sticker-del{position:absolute;top:-6px;right:-6px;width:16px;height:16px;border-radius:50%;background:var(--red);color:#FAF3E3;font-size:10px;border:none;cursor:pointer;opacity:0;transition:opacity .15s ease;}",
+      "." + ROOT_CLASS + " .dms-sticker:hover .dms-sticker-del{opacity:1;}",
+      "",
+      "/* ===== 表情包选择器（贴表情包弹层）===== */",
+      "." + ROOT_CLASS + " .dms-sticker-picker{",
+      "  position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:300;",
+      "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "  padding:10px;max-width:90vw;max-height:240px;overflow-y:auto;width:420px;",
       "}",
-      "." + ROOT_CLASS + " .dms-color-dot.active{border-color:var(--ink);transform:scale(1.15);}",
+      "." + ROOT_CLASS + " .dms-sticker-picker-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px;}",
+      "." + ROOT_CLASS + " .dms-sticker-picker-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:6px;}",
+      "." + ROOT_CLASS + " .dms-sticker-pick{padding:4px;background:var(--paper-2);border:1px solid var(--line);border-radius:var(--radius-sm);cursor:pointer;display:flex;flex-direction:column;align-items:center;gap:2px;}",
+      "." + ROOT_CLASS + " .dms-sticker-pick:hover{border-color:var(--red);background:var(--paper-3);}",
+      "." + ROOT_CLASS + " .dms-sticker-pick img{width:40px;height:40px;object-fit:contain;}",
+      "." + ROOT_CLASS + " .dms-sticker-pick-cap{font-size:9px;color:var(--ink-mute);max-width:56px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}",
       "",
       "/* ===== 批注弹出菜单 ===== */",
       "." + ROOT_CLASS + " .dms-annot-menu{",
@@ -738,7 +812,33 @@
       "",
       "/* ===== 装饰小元素 ===== */",
       "." + ROOT_CLASS + " .dms-deco-star{position:absolute;color:var(--tape-yellow);font-size:14px;opacity:0.6;pointer-events:none;}",
-      "." + ROOT_CLASS + " .dms-divider{text-align:center;color:var(--ink-mute);font-size:12px;margin:10px 0;letter-spacing:4px;}"
+      "." + ROOT_CLASS + " .dms-divider{text-align:center;color:var(--ink-mute);font-size:12px;margin:10px 0;letter-spacing:4px;}",
+      "",
+      "/* ===== 手机端适配 ===== */",
+      "@media(max-width:600px){",
+      "  ." + ROOT_CLASS + " .dms-wrap{padding:12px 10px 20px;}",
+      "  ." + ROOT_CLASS + " .dms-card{padding:14px 12px;margin-bottom:12px;}",
+      "  ." + ROOT_CLASS + " .dms-card::before{left:18px;width:44px;}",
+      "  ." + ROOT_CLASS + " .dms-card h2{font-size:14px;}",
+      "  ." + ROOT_CLASS + " .dms-page-header{padding:10px 12px 6px;flex-wrap:wrap;gap:6px;}",
+      "  ." + ROOT_CLASS + " .dms-page-title{font-size:13px;}",
+      "  ." + ROOT_CLASS + " .dms-page-body{padding:10px 12px;min-height:160px;}",
+      "  ." + ROOT_CLASS + " .dms-diary-text{font-size:13px;line-height:28px;}",
+      "  ." + ROOT_CLASS + " .dms-block-text{font-size:13px;line-height:28px;}",
+      "  ." + ROOT_CLASS + " .dms-user-diary-edit{font-size:13px;line-height:28px;min-height:200px;padding:8px 10px;}",
+      "  ." + ROOT_CLASS + " .dms-btn{padding:8px 14px;font-size:13px;}",
+      "  ." + ROOT_CLASS + " .dms-btn-sm{padding:6px 10px;font-size:11px;}",
+      "  ." + ROOT_CLASS + " .dms-tool-btn{padding:4px 8px;font-size:11px;}",
+      "  ." + ROOT_CLASS + " .dms-annot-menu{min-width:160px;}",
+      "  ." + ROOT_CLASS + " .dms-annot-input{font-size:12px;}",
+      "  ." + ROOT_CLASS + " .dms-sticker{width:48px;height:48px;}",
+      "  ." + ROOT_CLASS + " .dms-sticker img{width:40px;height:40px;}",
+      "  ." + ROOT_CLASS + " .dms-sticker-cap{font-size:8px;max-width:64px;}",
+      "  ." + ROOT_CLASS + " .dms-sync-dialog{padding:16px;}",
+      "  ." + ROOT_CLASS + " .dms-sticker-pick-grid{grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:6px;}",
+      "  ." + ROOT_CLASS + " .dms-sticker-pick-item{width:56px;height:56px;}",
+      "  ." + ROOT_CLASS + " .dms-panel{width:100%;max-width:100%;}",
+      "}"
     ].join("\n");
     document.head.appendChild(style);
   }
@@ -764,13 +864,14 @@
       generatingMsg: "",
       lastError: "",
       view: "cover",
+      subView: null,        // 交换模式子视图: null(非交换/默认双页) | "userWrite" | "charDiary"
       currentDiary: null,
       diaryKey: "",
-      doodleMode: false,
-      doodleColor: "#C44536",
-      doodleTool: "pen",
       annotMenuEl: null,
-      settingsOpen: false
+      settingsOpen: false,
+      stickerLib: null,
+      stickerPickerOpen: false,
+      syncDialogShown: false
     };
 
     function toast(msg) {
@@ -812,18 +913,46 @@
       var rightBtns = [];
 
       if (state.view === "cover") {
+        var coverBtnLabel = state.settings.swapMode
+          ? (state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u5199\u6211\u7684\u65e5\u8bb0")
+          : (state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u7ffb\u5f00\u8fd9\u4e00\u9875");
         rightBtns.push(el("button", {
           class: "dms-btn dms-btn-primary",
           disabled: !state.selectedConv || state.generating,
           onclick: function () { onOpenDiary(); }
-        }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u7ffb\u5f00\u8fd9\u4e00\u9875"]));
+        }, coverBtnLabel));
       } else if (state.view === "diary") {
-        rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; state.lastError = ""; renderContent(); } }, ["\u5c01\u9762"]));
-        rightBtns.push(el("button", {
-          class: "dms-btn dms-btn-primary dms-btn-sm",
-          disabled: state.generating,
-          onclick: function () { onOpenDiary(true); }
-        }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199"]));
+        // 交换模式 userWrite 子视图
+        if (state.settings.swapMode && state.subView === "userWrite") {
+          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+            state.view = "cover"; state.lastError = ""; state.subView = null;
+            // 不丢弃已写的草稿，但回到封面
+            renderContent();
+          } }, ["\u5c01\u9762"]));
+          rightBtns.push(el("button", {
+            class: "dms-btn dms-btn-primary dms-btn-sm",
+            disabled: state.generating,
+            onclick: function () { onUserDiaryDone(); }
+          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u5199\u597d\u4e86\uff0c\u7ed9TA\u770b"]));
+        } else if (state.settings.swapMode && state.subView === "charDiary") {
+          // 交换模式 charDiary 子视图
+          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+            state.view = "cover"; state.lastError = ""; state.subView = null; renderContent();
+          } }, ["\u5c01\u9762"]));
+          rightBtns.push(el("button", {
+            class: "dms-btn dms-btn-primary dms-btn-sm",
+            disabled: state.generating,
+            onclick: function () { onOpenDiary(true); }
+          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199TA\u65e5\u8bb0"]));
+        } else {
+          // 非交换模式日记视图
+          rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; state.lastError = ""; state.subView = null; renderContent(); } }, ["\u5c01\u9762"]));
+          rightBtns.push(el("button", {
+            class: "dms-btn dms-btn-primary dms-btn-sm",
+            disabled: state.generating,
+            onclick: function () { onOpenDiary(true); }
+          }, [state.generating ? [el("span", { class: "dms-loading" }), state.generatingMsg || "\u5199\u4e2d\u2026"] : "\u91cd\u5199"]));
+        }
       } else if (state.view === "history") {
         rightBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () { state.view = "cover"; renderContent(); } }, ["\u8fd4\u56de"]));
       }
@@ -867,6 +996,23 @@
         el("div", { class: "dms-divider" }, ["\u2767 \u2767 \u2767"])
       ]);
       wrap.appendChild(heroCard);
+
+      // 交换日记开关卡
+      var swapCard = el("div", { class: "dms-card dms-fade-in", style: { padding: "14px 16px" } });
+      var swapSwitch = makeSwitch(
+        "\u4ea4\u6362\u65e5\u8bb0\u6a21\u5f0f",
+        "\u5f00\u542f\u540e\uff1a\u4f60\u5148\u5199\u65e5\u8bb0\uff0c\u518d\u8ba9TA\u770b\u5e76\u56de\u5199\uff1b\u5173\u95ed\u5219\u53ea\u770bTA\u7684\u65e5\u8bb0\u3002",
+        state.settings.swapMode,
+        function (v) {
+          state.settings.swapMode = v;
+          saveSettings(roche, state.settings);
+          var foot = qs(".dms-footer", root);
+          if (foot) foot.remove();
+          root.appendChild(buildFooter());
+        }
+      );
+      swapCard.appendChild(swapSwitch);
+      wrap.appendChild(swapCard);
 
       // 选择会话
       var convCard = el("div", { class: "dms-card dms-fade-in-delay" }, [
@@ -936,6 +1082,12 @@
         });
       }
       convCard.appendChild(convList);
+      // 挂载表情包组入口
+      var mountBtn = el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", style: { marginTop: "8px" }, onclick: function () {
+        if (!state.selectedConv) { toast("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"); return; }
+        openStickerMountDialog(state.selectedConv);
+      } }, ["\u6302\u8f7d\u8868\u60c5\u5305\u7ec4"]);
+      convCard.appendChild(mountBtn);
       wrap.appendChild(convCard);
 
       // 选择日期
@@ -1019,10 +1171,73 @@
         return wrap;
       }
 
+      // 交换模式第一步：user 先写日记
+      if (state.settings.swapMode && state.subView === "userWrite") {
+        return buildUserWriteView();
+      }
+
+      // 默认（非交换 或 charDiary）：双页视图
+      return buildDiarySpreadView();
+    }
+
+    /* ---------- 交换模式 - user 写日记视图 ---------- */
+    function buildUserWriteView() {
+      var wrap = el("div", { class: "dms-wrap dms-page-anim" });
+      var diary = state.currentDiary;
+
+      // 引导卡片
+      var intro = el("div", { class: "dms-card dms-fade-in", style: { textAlign: "center", padding: "16px" } }, [
+        el("div", { class: "dms-handwritten", style: { fontSize: "22px", color: "var(--red)", marginBottom: "6px" } },
+          ["\u5148\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0"]),
+        el("div", { style: { fontSize: "12px", color: "var(--ink-dim)" } },
+          ["\u5199\u597d\u540e\uff0c\u70b9\u201c\u5199\u597d\u4e86\u201d\u8ba9 TA \u770b\u5e76\u56de\u5199 TA \u7684\u65e5\u8bb0"]),
+        el("div", { class: "dms-divider" }, ["\u2767 \u2767 \u2767"])
+      ]);
+      wrap.appendChild(intro);
+
+      // 编辑器卡片
+      var editCard = el("div", { class: "dms-card tape-blue dms-fade-in-delay" });
+      editCard.appendChild(el("div", { class: "dms-page-header" }, [
+        el("div", {}, [
+          el("div", { class: "dms-page-title" }, [(diary.userName || "\u6211") + " \u7684\u65e5\u8bb0"]),
+          el("div", { class: "dms-page-meta" }, [diary.dateKey || toDateKey(state.selectedDate)])
+        ]),
+        el("div", { style: { display: "flex", gap: "4px" } }, [
+          el("button", { class: "dms-tool-btn", onclick: function () {
+            if (state.currentDiary) {
+              state.currentDiary.userDiary = "";
+              state.currentDiary.userDiaryAt = Date.now();
+              saveCurrentDiary().then(function () { renderContent(); });
+            }
+          } }, ["\u6e05\u7a7a"])
+        ])
+      ]));
+      var editBody = el("div", { class: "dms-page-body", style: { minHeight: "320px" } });
+      var editArea = el("textarea", {
+        class: "dms-user-diary-edit",
+        style: { minHeight: "320px" },
+        placeholder: "\u5728\u8fd9\u91cc\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0\u2026\n\u7528\u4f60\u81ea\u5df1\u7684\u8bdd\uff0c\u8bb0\u4e0b\u4eca\u5929\u7684\u5fc3\u58f0\u3002\n\u5199\u5b8c\u540e\u70b9\u201c\u5199\u597d\u4e86\u201d\uff0cTA \u4f1a\u770b\u5230\u5e76\u56de\u5199\u3002",
+        oninput: function () {
+          state.currentDiary.userDiary = this.value;
+          state.currentDiary.userDiaryAt = Date.now();
+          saveCurrentDiary();
+        }
+      });
+      editArea.value = diary.userDiary || "";
+      editBody.appendChild(editArea);
+      editCard.appendChild(editBody);
+      wrap.appendChild(editCard);
+
+      return wrap;
+    }
+
+    /* ---------- 双页日记视图（非交换模式 / 交换模式 charDiary）---------- */
+    function buildDiarySpreadView() {
+      var wrap = el("div", { class: "dms-wrap dms-page-anim" });
       var diary = state.currentDiary;
       var spread = el("div", { class: "dms-diary-spread" });
 
-      // 左页：TA的日记
+      // ===== 左页：TA 的日记 =====
       var charPage = el("div", { class: "dms-diary-page" });
       charPage.appendChild(el("div", { class: "dms-page-header" }, [
         el("div", {}, [
@@ -1030,34 +1245,28 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
-          el("button", { class: "dms-tool-btn" + (state.doodleMode ? " active" : ""), onclick: function () { toggleDoodle(charPage); } }, ["\u6d82\u9e26"]),
-          el("button", { class: "dms-tool-btn", onclick: function () { clearDoodles(charPage); } }, ["\u6e05\u9664"]),
-          el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"])
+          el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
+          el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"])
         ])
       ]));
-
-      if (state.doodleMode) {
-        charPage.appendChild(buildDoodleToolbar());
-      }
 
       var charBody = el("div", { class: "dms-page-body" });
       var charTextEl = el("div", { class: "dms-diary-text", id: "charDiaryText" });
       renderAnnotatedText(charTextEl, diary.charDiary || "", diary.annotations || []);
       charBody.appendChild(charTextEl);
 
-      var canvas = el("canvas", { class: "dms-doodle-canvas" + (state.doodleMode ? " active" : "") });
-      charBody.appendChild(canvas);
-
       (diary.annotations || []).filter(function (a) { return a.type === "sticky"; }).forEach(function (a) {
         charBody.appendChild(makeStickyNote(a, charPage));
       });
+      (diary.stickers || []).forEach(function (s) {
+        charBody.appendChild(makeSticker(s, charPage));
+      });
 
       charPage.appendChild(charBody);
-      setupDoodleCanvas(canvas, charBody, charPage);
       setupTextSelection(charTextEl, charPage);
       spread.appendChild(charPage);
 
-      // 右页：我的日记（user手写）
+      // ===== 右页：我的日记 =====
       var userPage = el("div", { class: "dms-diary-page" });
       userPage.appendChild(el("div", { class: "dms-page-header" }, [
         el("div", {}, [
@@ -1070,33 +1279,42 @@
       ]));
 
       var userBody = el("div", { class: "dms-page-body" });
-
-      // 如果user已写日记且TA有批注，显示批注后的文本
-      var userTextEl = el("div", { class: "dms-diary-text", id: "userDiaryText" });
       var userDiaryText = diary.userDiary || "";
+
+      // user 日记只读显示（如果有批注，渲染批注）
+      var userTextEl = el("div", { class: "dms-diary-text", id: "userDiaryText" });
       if (userDiaryText.trim() && diary.charAnnotations && diary.charAnnotations.length > 0) {
         renderAnnotatedText(userTextEl, userDiaryText, diary.charAnnotations);
+      } else if (userDiaryText.trim()) {
+        userTextEl.textContent = userDiaryText;
       } else {
         userTextEl.style.display = "none";
       }
       userBody.appendChild(userTextEl);
 
-      // user手写编辑区（始终显示）
-      var editArea = el("textarea", {
-        class: "dms-user-diary-edit",
-        placeholder: "\u5728\u8fd9\u91cc\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0\u2026\n\u7528\u4f60\u81ea\u5df1\u7684\u8bdd\uff0c\u8bb0\u4e0b\u4eca\u5929\u7684\u5fc3\u58f0\u3002",
-        oninput: function () {
-          state.currentDiary.userDiary = this.value;
-          state.currentDiary.userDiaryAt = Date.now();
-          saveCurrentDiary();
+      // 非交换模式：显示可编辑区
+      // 交换模式 charDiary：显示只读区（user 日记已写完）
+      if (state.settings.swapMode && state.subView === "charDiary") {
+        if (!userDiaryText.trim()) {
+          userBody.appendChild(el("div", { class: "dms-empty", style: { padding: "20px 0" } }, ["\uff08\u8fd8\u6ca1\u5199\u65e5\u8bb0\uff09"]));
         }
-      });
-      editArea.value = userDiaryText;
-      userBody.appendChild(editArea);
+      } else {
+        // 非交换模式：保留可编辑 textarea
+        var editArea = el("textarea", {
+          class: "dms-user-diary-edit",
+          placeholder: "\u5728\u8fd9\u91cc\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0\u2026\n\u7528\u4f60\u81ea\u5df1\u7684\u8bdd\uff0c\u8bb0\u4e0b\u4eca\u5929\u7684\u5fc3\u58f0\u3002",
+          oninput: function () {
+            state.currentDiary.userDiary = this.value;
+            state.currentDiary.userDiaryAt = Date.now();
+            saveCurrentDiary();
+          }
+        });
+        editArea.value = userDiaryText;
+        userBody.appendChild(editArea);
 
-      // 提示语
-      if (!userDiaryText.trim()) {
-        userBody.appendChild(el("div", { style: { marginTop: "8px", fontSize: "12px", color: "var(--ink-mute)", fontStyle: "italic", textAlign: "center" } }, ["\u2712 \u8fd9\u91cc\u662f\u4f60\u7684\u624b\u5199\u533a\uff0c\u5c3d\u60c5\u5199\u4e0b\u5fc3\u58f0\u5427"]));
+        if (!userDiaryText.trim()) {
+          userBody.appendChild(el("div", { style: { marginTop: "8px", fontSize: "12px", color: "var(--ink-mute)", fontStyle: "italic", textAlign: "center" } }, ["\u2712 \u8fd9\u91cc\u662f\u4f60\u7684\u624b\u5199\u533a\uff0c\u5c3d\u60c5\u5199\u4e0b\u5fc3\u58f0\u5427"]));
+        }
       }
 
       userPage.appendChild(userBody);
@@ -1104,37 +1322,111 @@
 
       wrap.appendChild(spread);
 
-      // 底部操作
-      var actionBar = el("div", { class: "dms-card", style: { marginTop: "16px" } }, [
-        el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, [
-          el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
-            navigator.clipboard.writeText(diary.charDiary || "").then(function () { toast("\u5df2\u590d\u5236TA\u7684\u65e5\u8bb0"); }).catch(function () { toast("\u590d\u5236\u5931\u8d25"); });
-          } }, ["\u590d\u5236TA\u65e5\u8bb0"]),
-          el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+      // 底部操作条
+      var actionBtns = [
+        el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+          navigator.clipboard.writeText(diary.charDiary || "").then(function () { toast("\u5df2\u590d\u5236TA\u7684\u65e5\u8bb0"); }).catch(function () { toast("\u590d\u5236\u5931\u8d25"); });
+        } }, ["\u590d\u5236TA\u65e5\u8bb0"]),
+        el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+          if (!state.currentDiary) return;
+          var ctx = state.currentDiary.ctx || {};
+          var text = state.currentDiary.charDiary || "";
+          roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
+            if (!ok) return;
+            toast("\u540c\u6b65\u4e2d\u2026");
+            return syncFact(roche, ctx, text).then(function () { toast("\u5df2\u5199\u5165\u4e8b\u5b9e\u8bb0\u5fc6"); }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
+          });
+        } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"])
+      ];
+
+      // 交换模式 charDiary：额外按钮
+      if (state.settings.swapMode && state.subView === "charDiary") {
+        actionBtns.push(el("button", {
+          class: "dms-btn dms-btn-sm",
+          onclick: function () {
+            state.subView = "userWrite";
+            renderContent();
+          }
+        }, ["\u4fee\u6539\u6211\u7684\u65e5\u8bb0"]));
+        // 完成交换按钮：注入短期记忆
+        actionBtns.push(el("button", {
+          class: "dms-btn dms-btn-sm dms-btn-primary",
+          onclick: function () {
             if (!state.currentDiary) return;
             var ctx = state.currentDiary.ctx || {};
-            var text = state.currentDiary.charDiary || "";
-            roche.ui.confirm({ title: "\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6", message: "\u5c06\u628aTA\u7684\u65e5\u8bb0\u5199\u5165\u4e3b\u4e8b\u5b9e\u8bb0\u5fc6\u3002\u4e3b\u8bb0\u5fc6\u4e0d\u4f1a\u968f\u63d2\u4ef6\u5378\u8f7d\u800c\u5220\u9664\uff0c\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
+            roche.ui.confirm({
+              title: "\u5b8c\u6210\u4ea4\u6362",
+              message: "\u5c06\u628a\u6574\u7bc7\u4ea4\u6362\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u4e3b\u804a\u5929\uff0c\u8ba9 TA \u80fd\u770b\u5230\u5e76\u56de\u5e94\u3002\u662f\u5426\u7ee7\u7eed\uff1f"
+            }).then(function (ok) {
               if (!ok) return;
-              toast("\u540c\u6b65\u4e2d\u2026");
-              return syncFact(roche, ctx, text).then(function () { toast("\u5df2\u5199\u5165\u4e8b\u5b9e\u8bb0\u5fc6"); }).catch(function () { toast("\u5199\u5165\u5931\u8d25"); });
+              toast("\u6b63\u5728\u6ce8\u5165\u2026");
+              return saveCurrentDiary().then(function () {
+                return syncShortTerm(roche, ctx, state.currentDiary);
+              }).then(function () {
+                toast("\u5df2\u6ce8\u5165\u5230\u4e3b\u804a\u5929");
+              }).catch(function () { toast("\u6ce8\u5165\u5931\u8d25"); });
             });
-          } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]),
-          el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
-            if (!state.currentDiary) return;
-            roche.ui.confirm({ title: "\u5220\u9664\u65e5\u8bb0", message: "\u5220\u9664\u8fd9\u7bc7\u65e5\u8bb0\u53ca\u6240\u6709\u6279\u6ce8\uff1f" }).then(function (ok) {
-              if (!ok) return;
-              deleteDiary(roche, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; state.currentDiary = null; renderContent(); });
-            });
-          } }, ["\u5220\u9664\u65e5\u8bb0"])
-        ])
+          }
+        }, ["\u5b8c\u6210\u4ea4\u6362"]));
+      }
+
+      actionBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+        if (!state.currentDiary) return;
+        roche.ui.confirm({ title: "\u5220\u9664\u65e5\u8bb0", message: "\u5220\u9664\u8fd9\u7bc7\u65e5\u8bb0\u53ca\u6240\u6709\u6279\u6ce8\uff1f" }).then(function (ok) {
+          if (!ok) return;
+          deleteDiary(roche, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; state.currentDiary = null; state.subView = null; renderContent(); });
+        });
+      } }, ["\u5220\u9664\u65e5\u8bb0"]));
+
+      var actionBar = el("div", { class: "dms-card", style: { marginTop: "16px" } }, [
+        el("div", { style: { display: "flex", gap: "8px", flexWrap: "wrap" } }, actionBtns)
       ]);
       wrap.appendChild(actionBar);
 
       return wrap;
     }
 
-    /* ---------- 批注渲染 ---------- */
+    /* ---------- 分块解析 ---------- */
+    // 把带【块X】标记的文本解析成 [{id:"A", title:"块A", content:"..."}]
+    // 若无块标记，整体作为一块返回
+    function parseBlocks(text) {
+      if (!text) return [];
+      var lines = text.split("\n");
+      var blocks = [];
+      var cur = null;
+      var blockRe = /^\u3010\u5757([A-Za-z\u4e00-\u9fa5])\u3011\s*$/;
+      lines.forEach(function (line) {
+        var m = line.match(blockRe);
+        if (m) {
+          if (cur) blocks.push(cur);
+          var bid = m[1];
+          cur = { id: bid, title: "\u5757" + bid, content: "" };
+        } else {
+          if (!cur) {
+            cur = { id: "_main", title: "", content: "" };
+          }
+          cur.content += (cur.content ? "\n" : "") + line;
+        }
+      });
+      if (cur) blocks.push(cur);
+      // 去掉每块首尾空行
+      blocks.forEach(function (b) { b.content = b.content.replace(/^\n+/, "").replace(/\n+$/, ""); });
+      return blocks;
+    }
+
+    // 把整段 text 的字符位置 → 转成 [blockId, 块内偏移]
+    // 用于给批注/sticker 关联块
+    function blockOfPos(blocks, globalPos) {
+      var acc = 0;
+      for (var i = 0; i < blocks.length; i++) {
+        var len = blocks[i].content.length + 1; // +1 for newline
+        if (globalPos <= acc + len) return blocks[i].id;
+        acc += len;
+      }
+      return blocks.length ? blocks[blocks.length - 1].id : "_main";
+    }
+
+    /* ---------- 批注渲染（支持分块） ---------- */
     function renderAnnotatedText(container, text, annotations) {
       container.innerHTML = "";
       if (!text) {
@@ -1142,24 +1434,59 @@
         return;
       }
 
+      var blocks = parseBlocks(text);
+      var hasBlocks = blocks.length > 1 || (blocks.length === 1 && blocks[0].id !== "_main");
+
       var textAnnots = (annotations || []).filter(function (a) {
         return a.selectedText && a.type !== "sticky";
       }).map(function (a) {
+        var idx = text.indexOf(a.selectedText);
         return {
           id: a.id, type: a.type, comment: a.comment,
           selectedText: a.selectedText,
-          start: text.indexOf(a.selectedText),
-          end: text.indexOf(a.selectedText) + a.selectedText.length
+          blockId: a.blockId || (idx >= 0 ? blockOfPos(blocks, idx) : null),
+          start: idx,
+          end: idx + a.selectedText.length
         };
       }).filter(function (a) { return a.start >= 0; })
         .sort(function (a, b) { return a.start - b.start; });
 
+      if (!hasBlocks) {
+        // 无块标记，走老逻辑（单段）
+        renderPlainAnnotated(container, text, textAnnots);
+        return;
+      }
+
+      // 有块标记：按块渲染（自然融入手账风格，不显示突兀的块号标签）
+      var globalPos = 0;
+      blocks.forEach(function (blk, idx) {
+        // 块之间用淡分隔线区隔，像段落
+        var blockWrap = el("div", {
+          class: "dms-block" + (idx > 0 ? " dms-block-gap" : ""),
+          "data-block-id": blk.id,
+          "data-block-title": blk.title
+        });
+        var blockText = el("div", { class: "dms-block-text" });
+        // 该块内的批注
+        var blockAnnots = textAnnots.filter(function (a) { return a.blockId === blk.id; });
+        renderPlainAnnotated(blockText, blk.content, blockAnnots.map(function (a) {
+          // 把全局位置转成块内位置
+          var localStart = a.start - globalPos;
+          return Object.assign({}, a, { start: localStart, end: localStart + a.selectedText.length });
+        }));
+        blockWrap.appendChild(blockText);
+        container.appendChild(blockWrap);
+        globalPos += blk.content.length + 1; // +1 for the newline between blocks
+      });
+    }
+
+    // 在一段文本上渲染批注（无块概念）
+    function renderPlainAnnotated(container, text, annots) {
       var merged = [];
       var lastEnd = -1;
-      textAnnots.forEach(function (a) {
+      annots.forEach(function (a) {
         if (a.start > lastEnd) { merged.push(a); lastEnd = a.end; }
       });
-
       var pos = 0;
       merged.forEach(function (a) {
         if (a.start > pos) {
@@ -1168,6 +1495,7 @@
         var span = el("span", {
           class: "dms-annot dms-annot-" + a.type,
           "data-annot-id": a.id,
+          "data-block-id": a.blockId || "",
           "data-marker": a.type === "heart" ? "\u2665" : (a.type === "crossout" ? "~" : "*")
         });
         if (a.type === "crossout") {
@@ -1196,7 +1524,6 @@
     /* ---------- 文字选择 → 批注菜单 ---------- */
     function setupTextSelection(textEl, pageEl) {
       textEl.addEventListener("mouseup", function () {
-        if (state.doodleMode) return;
         setTimeout(function () {
           var sel = window.getSelection();
           if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
@@ -1208,7 +1535,6 @@
         }, 10);
       });
       textEl.addEventListener("touchend", function () {
-        if (state.doodleMode) return;
         setTimeout(function () {
           var sel = window.getSelection();
           if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
@@ -1238,11 +1564,22 @@
           toast("\u8bf7\u5148\u5199\u4e0b\u60f3\u6cd5");
           return;
         }
+        // 找出选区所在的块 id
+        var blockId = null;
+        var node = range.commonAncestorContainer;
+        while (node && node !== textEl) {
+          if (node.nodeType === 1 && node.classList && node.classList.contains("dms-block")) {
+            blockId = node.getAttribute("data-block-id");
+            break;
+          }
+          node = node.parentNode;
+        }
         var annot = {
           id: crypto.randomUUID(),
           type: type,
           selectedText: selectedText,
           comment: comment,
+          blockId: blockId,
           createdAt: Date.now()
         };
         if (!state.currentDiary.annotations) state.currentDiary.annotations = [];
@@ -1347,146 +1684,167 @@
       return sticky;
     }
 
-    /* ---------- 涂鸦系统 ---------- */
-    function buildDoodleToolbar() {
-      var toolbar = el("div", { class: "dms-toolbar" });
-      var colors = [
-        { color: "#C44536", name: "red" },
-        { color: "#3A6B8A", name: "blue" },
-        { color: "#7B8F5C", name: "green" },
-        { color: "#4A3C28", name: "ink" }
-      ];
-      toolbar.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u989c\u8272:"]));
-      colors.forEach(function (c) {
-        var dot = el("span", {
-          class: "dms-color-dot" + (state.doodleColor === c.color ? " active" : ""),
-          style: { background: c.color },
-          onclick: function () { state.doodleColor = c.color; renderContent(); }
-        });
-        toolbar.appendChild(dot);
+    /* ---------- 表情包贴纸（贴到日记上） ---------- */
+    function makeSticker(s, pageEl) {
+      var sticker = el("div", {
+        class: "dms-sticker",
+        style: { left: (s.x || 30) + "px", top: (s.y || 60) + "px" }
       });
-      toolbar.appendChild(el("span", { style: { width: "10px" } }));
-      toolbar.appendChild(el("button", {
-        class: "dms-tool-btn" + (state.doodleTool === "pen" ? " active" : ""),
-        onclick: function () { state.doodleTool = "pen"; renderContent(); }
-      }, ["\u753b\u7b14"]));
-      toolbar.appendChild(el("button", {
-        class: "dms-tool-btn" + (state.doodleTool === "highlighter" ? " active" : ""),
-        onclick: function () { state.doodleTool = "highlighter"; renderContent(); }
-      }, ["\u8367\u5149\u7b14"]));
-      return toolbar;
-    }
-
-    function toggleDoodle(pageEl) {
-      state.doodleMode = !state.doodleMode;
-      renderContent();
-    }
-
-    function clearDoodles(pageEl) {
-      if (!state.currentDiary) return;
-      roche.ui.confirm({ title: "\u6e05\u9664\u6d82\u9e26", message: "\u786e\u5b9a\u6e05\u9664\u6240\u6709\u6d82\u9e26\uff1f" }).then(function (ok) {
-        if (!ok) return;
-        state.currentDiary.doodles = [];
+      sticker.appendChild(el("img", { src: s.url, alt: s.caption || "" }));
+      if (s.caption) {
+        sticker.appendChild(el("div", { class: "dms-sticker-cap" }, [s.caption]));
+      }
+      // 块标记小角标
+      if (s.blockId) {
+        sticker.appendChild(el("div", {
+          class: "dms-sticker-blocktag",
+          title: "\u6240\u5c5e\u5757: " + s.blockId,
+          style: { position: "absolute", top: "-2px", left: "-2px", fontSize: "8px", color: "#FAF3E3", background: "var(--blue)", borderRadius: "3px", padding: "0 3px" }
+        }, [s.blockId]));
+      }
+      var delBtn = el("button", { class: "dms-sticker-del", onclick: function (ev) {
+        ev.stopPropagation();
+        if (!state.currentDiary) return;
+        var arr = state.currentDiary.stickers || [];
+        var i = arr.indexOf(s);
+        if (i >= 0) { arr.splice(i, 1); state.currentDiary.stickers = arr; }
         saveCurrentDiary();
-        renderContent();
-        toast("\u5df2\u6e05\u9664");
+        sticker.remove();
+      } }, ["\u00d7"]);
+      sticker.appendChild(delBtn);
+
+      var dragging = false, offsetX = 0, offsetY = 0;
+      sticker.addEventListener("pointerdown", function (e) {
+        if (e.target === delBtn) return;
+        dragging = true;
+        offsetX = e.clientX - sticker.offsetLeft;
+        offsetY = e.clientY - sticker.offsetTop;
+        sticker.setPointerCapture(e.pointerId);
+        sticker.style.cursor = "grabbing";
+      });
+      sticker.addEventListener("pointermove", function (e) {
+        if (!dragging) return;
+        s.x = e.clientX - offsetX;
+        s.y = e.clientY - offsetY;
+        sticker.style.left = s.x + "px";
+        sticker.style.top = s.y + "px";
+      });
+      sticker.addEventListener("pointerup", function () {
+        if (dragging) { dragging = false; sticker.style.cursor = "grab"; saveCurrentDiary(); }
+      });
+      return sticker;
+    }
+
+    /* ---------- 表情包选择器 ---------- */
+    function openStickerPicker(pageEl) {
+      if (!state.currentDiary) return;
+      // 关闭旧的
+      var old = qs(".dms-sticker-picker", document);
+      if (old) old.remove();
+
+      getStickerLib(roche).then(function (lib) {
+        state.stickerLib = lib;
+        var cid = state.currentDiary.conversationId;
+        var stickers = getStickersForConv(lib, cid);
+        if (!stickers.length) {
+          toast("\u8fd9\u4e2a\u4f1a\u8bdd\u8fd8\u6ca1\u6302\u8f7d\u8868\u60c5\u5305\u7ec4\uff0c\u8bf7\u5728\u8bbe\u7f6e\u2192\u8868\u60c5\u5305\u5e93\u91cc\u6dfb\u52a0\u5e76\u6302\u8f7d");
+          return;
+        }
+        var picker = el("div", { class: "dms-sticker-picker" });
+        picker.appendChild(el("div", { class: "dms-sticker-picker-head" }, [
+          el("span", { style: { fontSize: "12px", color: "var(--ink-mute)" } }, ["\u9009\u4e2a\u8868\u60c5\u5305\u8d34\u4e0a\u53bb"]),
+          el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { picker.remove(); } }, ["\u5173\u95ed"])
+        ]));
+        var grid = el("div", { class: "dms-sticker-picker-grid" });
+        stickers.forEach(function (st) {
+          var pick = el("div", { class: "dms-sticker-pick" }, [
+            el("img", { src: st.url }),
+            el("div", { class: "dms-sticker-pick-cap" }, [st.caption || ""])
+          ]);
+          pick.addEventListener("click", function () {
+            // 贴到当前页（pageEl），位置随机一点
+            if (!state.currentDiary.stickers) state.currentDiary.stickers = [];
+            var placed = {
+              id: "st" + Date.now() + Math.random().toString(36).slice(2, 6),
+              url: st.url,
+              caption: st.caption || "",
+              x: 30 + Math.random() * 120,
+              y: 60 + Math.random() * 80,
+              blockId: null,
+              createdAt: Date.now()
+            };
+            state.currentDiary.stickers.push(placed);
+            saveCurrentDiary();
+            picker.remove();
+            renderContent();
+          });
+          grid.appendChild(pick);
+        });
+        picker.appendChild(grid);
+        document.body.appendChild(picker);
+        // 点外面关闭
+        setTimeout(function () {
+          document.addEventListener("mousedown", function close(ev) {
+            if (!picker.contains(ev.target)) { picker.remove(); document.removeEventListener("mousedown", close); }
+          });
+        }, 0);
       });
     }
 
-    function setupDoodleCanvas(canvas, container, pageEl) {
-      var ctx = canvas.getContext("2d");
-      var drawing = false;
-      var currentStroke = null;
-      var strokes = (state.currentDiary && state.currentDiary.doodles) || [];
+    /* ---------- 会话挂载表情包组对话框 ---------- */
+    function openStickerMountDialog(conv) {
+      var cid = conv.conversationId || conv.id;
+      getStickerLib(roche).then(function (lib) {
+        var mounted = (lib.sessionGroups && lib.sessionGroups[cid]) || [];
+        // 关闭旧的
+        var old = qs(".dms-mount-dialog", document);
+        if (old) old.remove();
 
-      function resize() {
-        canvas.width = container.offsetWidth;
-        canvas.height = container.offsetHeight;
-        redraw();
-      }
+        var overlay = el("div", { class: "dms-mount-overlay", style: { position: "fixed", inset: "0", background: "rgba(0,0,0,0.4)", zIndex: "400", display: "flex", alignItems: "center", justifyContent: "center" } });
+        var dlg = el("div", { class: "dms-mount-dialog", style: { background: "var(--paper)", borderRadius: "var(--radius)", padding: "16px", maxWidth: "360px", width: "90%", maxHeight: "80vh", overflowY: "auto" } });
+        dlg.appendChild(el("div", { class: "dms-handwritten", style: { fontSize: "16px", color: "var(--red)", marginBottom: "8px" } }, ["\u6302\u8f7d\u8868\u60c5\u5305\u7ec4"]));
+        dlg.appendChild(el("div", { class: "dms-hint", style: { marginBottom: "10px" } }, ["\u52fe\u9009\u8981\u6302\u8f7d\u5230\u8fd9\u4e2a\u4f1a\u8bdd\u7684\u7ec4\uff0c\u53ef\u591a\u9009\u3002"]));
 
-      function redraw() {
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        strokes.forEach(function (stroke) {
-          ctx.globalAlpha = stroke.tool === "highlighter" ? 0.35 : 1;
-          ctx.strokeStyle = stroke.color;
-          ctx.lineWidth = stroke.tool === "highlighter" ? 12 : 2;
-          ctx.lineCap = "round";
-          ctx.lineJoin = "round";
-          ctx.beginPath();
-          stroke.points.forEach(function (p, i) {
-            if (i === 0) ctx.moveTo(p[0], p[1]);
-            else ctx.lineTo(p[0], p[1]);
+        if (!lib.groups.length) {
+          dlg.appendChild(el("div", { class: "dms-empty" }, ["\u8fd8\u6ca1\u6709\u8868\u60c5\u5305\u7ec4\uff0c\u8bf7\u53bb\u8bbe\u7f6e\u91cc\u65b0\u5efa\u3002"]));
+        } else {
+          lib.groups.forEach(function (g) {
+            var isOn = mounted.indexOf(g.id) >= 0;
+            var row = el("label", { style: { display: "flex", alignItems: "center", gap: "8px", padding: "6px 0", cursor: "pointer", borderBottom: "1px solid var(--line)" } }, [
+              el("input", { type: "checkbox", checked: isOn, style: { accentColor: "var(--red)" } }),
+              el("div", { style: { flex: "1" } }, [
+                el("div", { style: { fontSize: "13px", fontWeight: "600" } }, [g.name]),
+                el("div", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, [(g.stickers || []).length + " \u4e2a\u8868\u60c5\u5305"])
+              ])
+            ]);
+            var cb = row.querySelector("input");
+            cb.addEventListener("change", function () {
+              if (this.checked) {
+                if (mounted.indexOf(g.id) < 0) mounted.push(g.id);
+              } else {
+                mounted = mounted.filter(function (x) { return x !== g.id; });
+              }
+            });
+            dlg.appendChild(row);
           });
-          ctx.stroke();
-        });
-        ctx.globalAlpha = 1;
-      }
-
-      function getPos(e) {
-        var rect = canvas.getBoundingClientRect();
-        return [e.clientX - rect.left, e.clientY - rect.top];
-      }
-
-      canvas.addEventListener("pointerdown", function (e) {
-        if (!state.doodleMode) return;
-        e.preventDefault();
-        drawing = true;
-        currentStroke = {
-          points: [],
-          color: state.doodleColor,
-          tool: state.doodleTool,
-          width: state.doodleTool === "highlighter" ? 12 : 2
-        };
-        currentStroke.points.push(getPos(e));
-        canvas.setPointerCapture(e.pointerId);
-      });
-
-      canvas.addEventListener("pointermove", function (e) {
-        if (!drawing) return;
-        e.preventDefault();
-        currentStroke.points.push(getPos(e));
-        redraw();
-        ctx.globalAlpha = currentStroke.tool === "highlighter" ? 0.35 : 1;
-        ctx.strokeStyle = currentStroke.color;
-        ctx.lineWidth = currentStroke.width;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        currentStroke.points.forEach(function (p, i) {
-          if (i === 0) ctx.moveTo(p[0], p[1]);
-          else ctx.lineTo(p[0], p[1]);
-        });
-        ctx.stroke();
-        ctx.globalAlpha = 1;
-      });
-
-      canvas.addEventListener("pointerup", function (e) {
-        if (!drawing) return;
-        drawing = false;
-        if (currentStroke && currentStroke.points.length > 1) {
-          strokes.push(currentStroke);
-          if (!state.currentDiary.doodles) state.currentDiary.doodles = [];
-          state.currentDiary.doodles = strokes.slice();
-          saveCurrentDiary();
         }
-        currentStroke = null;
-      });
 
-      canvas.addEventListener("pointerleave", function (e) {
-        if (drawing) {
-          drawing = false;
-          if (currentStroke && currentStroke.points.length > 1) {
-            strokes.push(currentStroke);
-            state.currentDiary.doodles = strokes.slice();
-            saveCurrentDiary();
-          }
-          currentStroke = null;
-        }
+        var btnRow = el("div", { style: { display: "flex", gap: "8px", marginTop: "12px" } }, [
+          el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+            if (!lib.sessionGroups) lib.sessionGroups = {};
+            lib.sessionGroups[cid] = mounted;
+            saveStickerLib(roche, lib).then(function () {
+              toast("\u5df2\u4fdd\u5b58");
+              overlay.remove();
+            });
+          } }, ["\u4fdd\u5b58"]),
+          el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () { overlay.remove(); } }, ["\u53d6\u6d88"])
+        ]);
+        dlg.appendChild(btnRow);
+        overlay.appendChild(dlg);
+        overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+        document.body.appendChild(overlay);
       });
-
-      setTimeout(resize, 50);
-      return { resize: resize, redraw: redraw };
     }
 
     /* ---------- 设置面板 ---------- */
@@ -1563,8 +1921,106 @@
       sec5.appendChild(ml);
       body.appendChild(sec5);
 
+      // 表情包库
+      var sec6 = el("div", { class: "dms-settings-section" }, [
+        el("h3", {}, ["\u8868\u60c5\u5305\u5e93"]),
+        el("div", { class: "dms-hint", style: { marginBottom: "6px" } }, ["\u901a\u8fc7URL\u5bfc\u5165\u8868\u60c5\u5305\uff0c\u53ef\u5206\u7ec4\u7ba1\u7406\uff0c\u6bcf\u4e2a\u4f1a\u8bdd\u53ef\u6302\u8f7d\u4e0d\u540c\u7ec4\u3002"])
+      ]);
+      var stickerBox = el("div", { class: "dms-sticker-box" });
+      sec6.appendChild(stickerBox);
+      body.appendChild(sec6);
+      // 异步渲染表情包库管理
+      renderStickerLibManager(stickerBox);
+
       panel.appendChild(body);
       return panel;
+    }
+
+    /* ---------- 表情包库管理 ---------- */
+    function renderStickerLibManager(box) {
+      box.innerHTML = "";
+      getStickerLib(roche).then(function (lib) {
+        state.stickerLib = lib;
+        // 新建组
+        var addGroupBtn = el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", style: { marginBottom: "8px" } }, ["\u65b0\u5efa\u7ec4"]);
+        addGroupBtn.addEventListener("click", function () {
+          var name = window.prompt("\u7ec4\u540d\uff08\u5982\uff1a\u9ed1\u8138\u3001\u53ef\u7231\u3001\u840c\u7cfb\uff09", "\u65b0\u7ec4");
+          if (!name || !name.trim()) return;
+          var g = { id: "g" + Date.now(), name: name.trim(), stickers: [] };
+          lib.groups.push(g);
+          saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); toast("\u5df2\u65b0\u5efa"); });
+        });
+        box.appendChild(addGroupBtn);
+
+        if (!lib.groups.length) {
+          box.appendChild(el("div", { class: "dms-empty" }, ["\u8fd8\u6ca1\u6709\u8868\u60c5\u5305\u7ec4\uff0c\u70b9\u4e0a\u9762\u65b0\u5efa\u3002"]));
+          return;
+        }
+
+        lib.groups.forEach(function (g) {
+          var gcard = el("div", { class: "dms-sticker-group" });
+          var head = el("div", { class: "dms-sticker-group-head" }, [
+            el("input", {
+              class: "dms-input dms-sticker-group-name",
+              value: g.name,
+              style: { flex: "1", fontSize: "13px", fontWeight: "600" },
+              onchange: function () {
+                g.name = this.value || g.name;
+                saveStickerLib(roche, lib).then(function () { toast("\u5df2\u4fdd\u5b58"); });
+              }
+            }),
+            el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", onclick: function () {
+              roche.ui.confirm({ title: "\u5220\u9664\u7ec4", message: "\u5220\u9664\u7ec4\u300c" + g.name + "\u300d\u53ca\u5176\u8868\u60c5\u5305\uff1f" }).then(function (ok) {
+                if (!ok) return;
+                lib.groups = lib.groups.filter(function (x) { return x.id !== g.id; });
+                // 清理会话挂载
+                Object.keys(lib.sessionGroups || {}).forEach(function (cid) {
+                  lib.sessionGroups[cid] = (lib.sessionGroups[cid] || []).filter(function (id) { return id !== g.id; });
+                });
+                saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); toast("\u5df2\u5220\u9664"); });
+              });
+            } }, ["\u5220"])
+          ]);
+          gcard.appendChild(head);
+
+          // 表情包列表
+          var grid = el("div", { class: "dms-sticker-grid" });
+          (g.stickers || []).forEach(function (s) {
+            var cell = el("div", { class: "dms-sticker-cell" }, [
+              el("img", { src: s.url, class: "dms-sticker-img", onerror: function () { this.style.opacity = "0.3"; } }),
+              el("div", { class: "dms-sticker-caption" }, [s.caption || ""]),
+              el("button", { class: "dms-sticker-cell-del", onclick: function () {
+                g.stickers = g.stickers.filter(function (x) { return x.id !== s.id; });
+                saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); });
+              } }, ["\u00d7"])
+            ]);
+            // 点 caption 编辑
+            var capEl = cell.querySelector(".dms-sticker-caption");
+            capEl.addEventListener("dblclick", function () {
+              var v = window.prompt("\u8868\u60c5\u5305\u542b\u4e49", s.caption || "");
+              if (v != null) { s.caption = v; saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); }); }
+            });
+            grid.appendChild(cell);
+          });
+          gcard.appendChild(grid);
+
+          // 添加表情包
+          var addBtn = el("button", { class: "dms-btn dms-btn-sm", style: { marginTop: "6px" } }, ["\u6dfb\u52a0\u8868\u60c5\u5305 (URL)"]);
+          addBtn.addEventListener("click", function () {
+            var url = window.prompt("\u8868\u60c5\u5305\u56fe\u7247URL\uff08https://...\uff09");
+            if (!url || !url.trim()) return;
+            var caption = window.prompt("\u7ed9\u8fd9\u4e2a\u8868\u60c5\u5305\u914d\u4e2a\u6587\u5b57\u8bf4\u660e\uff08\u5982\uff1a\u8c03\u76ae\u3001\u5f00\u5fc3\u3001\u5077\u7b11\uff09\uff0c\u53ef\u4e3a\u7a7a", "");
+            var st = { id: "s" + Date.now() + Math.random().toString(36).slice(2, 6), url: url.trim(), caption: (caption || "").trim() };
+            g.stickers.push(st);
+            saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); toast("\u5df2\u6dfb\u52a0"); });
+          });
+          gcard.appendChild(addBtn);
+
+          box.appendChild(gcard);
+        });
+      }).catch(function () {
+        box.appendChild(el("div", { class: "dms-empty" }, ["\u52a0\u8f7d\u5931\u8d25"]));
+      });
     }
 
     function buildSettingsOverlay() {
@@ -1664,6 +2120,12 @@
               state.selectedConv = { conversationId: it.conversationId, name: it.charName, handle: it.charName };
               state.selectedDate = parseDateInput(it.dateKey || toDateInput(new Date()));
               state.lastError = "";
+              // 根据交换模式与日记内容设置子视图
+              if (state.settings.swapMode) {
+                state.subView = (it.userDiary && it.userDiary.trim()) ? "charDiary" : "userWrite";
+              } else {
+                state.subView = null;
+              }
               state.view = "diary";
               renderContent();
             } });
@@ -1706,52 +2168,118 @@
       var cid = conv.conversationId || conv.id;
       state.diaryKey = cid + ":" + toDateKey(state.selectedDate);
       state.lastError = "";
+      state.syncDialogShown = false;
 
-      // 检查是否已有日记
       getDiary(roche, state.diaryKey).then(function (existing) {
+        // 已有日记，直接打开（不强制重写）
         if (existing && existing.charDiary && !forceRegen) {
-          // 已有日记，直接打开
           state.currentDiary = existing;
+          if (state.settings.swapMode && existing.userDiary && existing.userDiary.trim()) {
+            // 交换模式且 user 已写过 → 直接进入看 char 日记模式
+            state.subView = "charDiary";
+          } else if (state.settings.swapMode) {
+            // 交换模式但 user 还没写 → 进入写日记模式
+            state.subView = "userWrite";
+          } else {
+            state.subView = null;
+          }
           state.view = "diary";
           renderContent();
           return;
         }
-        // 生成新日记
-        state.generating = true;
-        state.generatingMsg = forceRegen ? "TA \u6b63\u5728\u91cd\u5199\u2026" : "TA \u6b63\u5728\u56de\u5fc6\u4eca\u5929\u2026";
-        state.view = "diary";
-        renderContent();
 
-        return buildCtx(roche, state, state.selectedDate).then(function (ctx) {
-          if (!ctx.dayShort.length) {
-            state.generating = false;
-            state.generatingMsg = "";
-            state.lastError = "\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55\uff0c\u8bf7\u8c03\u6574\u65e5\u671f";
-            renderContent();
-            return;
-          }
-          return generateCharDiary(roche, ctx, state.settings).then(function (text) {
-            var diaryData = {
-              conversationId: cid,
-              charName: ctx.charName,
-              userName: ctx.userName,
-              dateKey: ctx.dateKey,
-              isGroup: ctx.isGroup,
-              charDiary: text || "",
-              userDiary: (existing && existing.userDiary) || "",
-              annotations: (existing && existing.annotations) || [],
-              doodles: (existing && existing.doodles) || [],
-              charAnnotations: (existing && existing.charAnnotations) || [],
-              ctx: ctx,
-              createdAt: (existing && existing.createdAt) || Date.now(),
-              updatedAt: Date.now()
-            };
-            return saveDiary(roche, state.diaryKey, diaryData).then(function () {
-              state.currentDiary = diaryData;
-              if (state.settings.autoSyncAfterGenerate) {
-                return syncFact(roche, ctx, text || "").catch(function () {});
-              }
-            }).then(function () {
+        // 交换模式：先让 user 写日记，不立即生成 char 日记
+        if (state.settings.swapMode && !forceRegen) {
+          var info = convInfo(conv);
+          state.currentDiary = existing || {
+            conversationId: cid,
+            charName: info.name,
+            userName: "",
+            dateKey: toDateKey(state.selectedDate),
+            isGroup: info.isGroup,
+            charDiary: "",
+            userDiary: "",
+            annotations: [],
+            stickers: [],
+            charAnnotations: [],
+            ctx: null,
+            createdAt: Date.now(),
+            updatedAt: Date.now()
+          };
+          state.subView = "userWrite";
+          state.view = "diary";
+          renderContent();
+          return;
+        }
+
+        // 非交换模式：直接生成 char 日记
+        state.subView = null;
+        generateCharDiaryAndShow(existing, forceRegen);
+      }).catch(function (e) {
+        console.error("[DMS]", e);
+        state.generating = false;
+        state.generatingMsg = "";
+        state.lastError = (e && e.message || String(e) || "\u672a\u77e5\u9519\u8bef");
+        renderContent();
+      });
+    }
+
+    /* ---------- 交换模式：user 写完日记，触发生成 char 日记 ---------- */
+    function onUserDiaryDone() {
+      if (state.generating) return;
+      if (!state.currentDiary) return;
+      var userText = state.currentDiary.userDiary || "";
+      if (!userText.trim()) { toast("\u8bf7\u5148\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0"); return; }
+      // 保存 user 日记，然后生成 char 日记
+      saveCurrentDiary().then(function () {
+        generateCharDiaryAndShow(state.currentDiary, false);
+      });
+    }
+
+    /* ---------- 实际生成 char 日记并显示 ---------- */
+    function generateCharDiaryAndShow(existing, forceRegen) {
+      state.generating = true;
+      state.generatingMsg = forceRegen ? "TA \u6b63\u5728\u91cd\u5199\u2026" : "TA \u6b63\u5728\u56de\u5fc6\u4eca\u5929\u2026";
+      state.view = "diary";
+      renderContent();
+
+      buildCtx(roche, state, state.selectedDate).then(function (ctx) {
+        if (!ctx.dayShort.length) {
+          state.generating = false;
+          state.generatingMsg = "";
+          state.lastError = "\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55\uff0c\u8bf7\u8c03\u6574\u65e5\u671f";
+          renderContent();
+          return;
+        }
+        // 交换模式：把 user 日记一并喂给 AI 作为参考
+        var userDiaryText = (state.settings.swapMode && state.currentDiary && state.currentDiary.userDiary) || "";
+        var genP = userDiaryText.trim()
+          ? generateCharDiaryWithUserRef(roche, ctx, state.settings, userDiaryText)
+          : generateCharDiary(roche, ctx, state.settings);
+
+        return genP.then(function (text) {
+          var diaryData = {
+            conversationId: ctx.conversationId,
+            charName: ctx.charName,
+            userName: ctx.userName,
+            dateKey: ctx.dateKey,
+            isGroup: ctx.isGroup,
+            charDiary: text || "",
+            userDiary: (existing && existing.userDiary) || (state.currentDiary && state.currentDiary.userDiary) || "",
+            annotations: (existing && existing.annotations) || [],
+            stickers: (existing && existing.stickers) || [],
+            charAnnotations: (existing && existing.charAnnotations) || [],
+            ctx: ctx,
+            createdAt: (existing && existing.createdAt) || (state.currentDiary && state.currentDiary.createdAt) || Date.now(),
+            updatedAt: Date.now()
+          };
+          return saveDiary(roche, state.diaryKey, diaryData).then(function () {
+            state.currentDiary = diaryData;
+            // 设置子视图
+            if (state.settings.swapMode) state.subView = "charDiary";
+            else state.subView = null;
+            // 弹同步选项对话框
+            return showSyncOptionsDialog(ctx, text || "").then(function () {
               state.generating = false;
               state.generatingMsg = "";
               state.lastError = "";
@@ -1767,6 +2295,242 @@
         state.lastError = (e && e.message || String(e) || "\u672a\u77e5\u9519\u8bef");
         renderContent();
       });
+    }
+
+    /* ---------- 交换模式：带 user 日记参考生成 char 日记 ---------- */
+    function generateCharDiaryWithUserRef(roche, ctx, settings, userDiaryText) {
+      var msgs = buildCharDiaryMessages(ctx, settings);
+      // 在最后追加 user 的日记作为参考
+      msgs.push({ role: "assistant", content: "\u3010" + (ctx.userName || "\u7528\u6237") + "\u521a\u5199\u7684\u65e5\u8bb0\u3011\n" + userDiaryText + "\n\n\u8bf7\u5728\u4f60\u7684\u65e5\u8bb0\u4e2d\u56de\u5e94/{}\u5bf9\u8bdd TA \u7684\u65e5\u8bb0\u3002".replace("{}", "") });
+      msgs.push({ role: "user", content: "\u73b0\u5728\u8bf7\u4f60\u5199\u4f60\u7684\u65e5\u8bb0\u3002" });
+      return callAI(roche, msgs, 0.7);
+    }
+
+    /* ---------- 同步选项对话框（生成后弹出） ---------- */
+    function showSyncOptionsDialog(ctx, diaryText) {
+      // 已显示过则跳过
+      if (state.syncDialogShown) return Promise.resolve();
+      state.syncDialogShown = true;
+
+      // 用户已选"记住选择"，按记忆配置直接同步
+      if (state.settings.rememberSyncChoice) {
+        var doFact = !!state.settings.syncToFactMemory;
+        var doShort = !!state.settings.syncToShortTerm;
+        if (state.currentDiary) {
+          state.currentDiary.shortTermSync = doShort;
+          state.currentDiary.factSync = doFact;
+          state.currentDiary.updatedAt = Date.now();
+        }
+        var p1 = doFact ? syncFact(roche, ctx, diaryText).catch(function () {}) : Promise.resolve();
+        // 短期记忆：交换模式下延后到用户贴完便签/表情后手动触发；非交换模式直接注入
+        var p2 = (doShort && !state.settings.swapMode) ? syncShortTerm(roche, ctx, state.currentDiary).catch(function () {}) : Promise.resolve();
+        return Promise.all([p1, p2]).then(function () { return saveCurrentDiary(); });
+      }
+
+      return new Promise(function (resolve) {
+        var overlay = el("div", {
+          class: "dms-sync-overlay",
+          style: {
+            position: "fixed", inset: "0", background: "rgba(74,60,40,0.45)",
+            zIndex: "500", display: "flex", alignItems: "center", justifyContent: "center",
+            animation: "dms-fadeIn .2s ease-out both"
+          }
+        });
+        var dlg = el("div", {
+          class: "dms-sync-dialog",
+          style: {
+            background: "var(--paper)", borderRadius: "var(--radius)",
+            padding: "20px", maxWidth: "360px", width: "90%",
+            boxShadow: "var(--shadow-strong)",
+            border: "1px solid var(--line)"
+          }
+        });
+        dlg.appendChild(el("div", {
+          class: "dms-handwritten",
+          style: { fontSize: "18px", color: "var(--red)", marginBottom: "6px", textAlign: "center" }
+        }, ["\u540c\u6b65\u5230\u54ea\u91cc\uff1f"]));
+        dlg.appendChild(el("div", {
+          style: { fontSize: "12px", color: "var(--ink-mute)", marginBottom: "14px", textAlign: "center" }
+        }, ["\u65e5\u8bb0\u5df2\u5199\u597d\uff0c\u9009\u62e9\u8981\u540c\u6b65\u5230\u54ea\u4e9b\u8bb0\u5fc6\u3002"]));
+
+        // 事实记忆选项
+        var factRow = el("label", {
+          style: { display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px", background: "var(--paper-2)", borderRadius: "var(--radius-sm)", marginBottom: "8px", cursor: "pointer" }
+        }, [
+          el("input", { type: "checkbox", checked: !!state.settings.syncToFactMemory, style: { marginTop: "3px", accentColor: "var(--red)" } }),
+          el("div", { style: { flex: "1" } }, [
+            el("div", { style: { fontSize: "13px", fontWeight: "600", color: "var(--ink)" } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]),
+            el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", marginTop: "2px" } }, ["\u5199\u5165 Roche \u4e3b\u8bb0\u5fc6\uff0c\u6c38\u4e45\u4fdd\u7559\uff0cAI \u80fd\u770b\u5230"])
+          ])
+        ]);
+        var factCb = factRow.querySelector("input");
+
+        // 短期记忆选项（交换模式下提示稍后手动触发）
+        var shortDesc = state.settings.swapMode
+          ? "\u5728\u4f60\u8d34\u5b8c\u4fbf\u7b7e/\u8868\u60c5\u540e\u70b9\u201c\u5b8c\u6210\u4ea4\u6362\u201d\u6309\u94ae\u65f6\uff0c\u628a\u6574\u7bc7\u4ea4\u6362\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u804a\u5929\uff0c\u8ba9 TA \u770b\u5230\u5e76\u56de\u5e94"
+          : "\u628a\u4eca\u5929\u7684\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u4e3b\u804a\u5929\uff0c\u4e0b\u6b21\u5bf9\u8bdd AI \u4f1a\u201c\u8bb0\u5f97\u201d\u4eca\u5929";
+        var shortRow = el("label", {
+          style: { display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px", background: "var(--paper-2)", borderRadius: "var(--radius-sm)", marginBottom: "8px", cursor: "pointer" }
+        }, [
+          el("input", { type: "checkbox", checked: !!state.settings.syncToShortTerm, style: { marginTop: "3px", accentColor: "var(--red)" } }),
+          el("div", { style: { flex: "1" } }, [
+            el("div", { style: { fontSize: "13px", fontWeight: "600", color: "var(--ink)" } }, ["\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6"]),
+            el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", marginTop: "2px" } }, [shortDesc])
+          ])
+        ]);
+        var shortCb = shortRow.querySelector("input");
+
+        // 记住选择
+        var rememberRow = el("label", {
+          style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "var(--ink-mute)", marginTop: "6px", cursor: "pointer" }
+        }, [
+          el("input", { type: "checkbox", style: { accentColor: "var(--red)" } }),
+          "\u8bb0\u4f4f\u6b64\u9009\u62e9\uff0c\u4e0b\u6b21\u4e0d\u518d\u8be2\u95ee"
+        ]);
+        var rememberCb = rememberRow.querySelector("input");
+
+        dlg.appendChild(factRow);
+        dlg.appendChild(shortRow);
+        dlg.appendChild(rememberRow);
+
+        // 按钮区
+        var btnRow = el("div", { style: { display: "flex", gap: "8px", marginTop: "14px" } }, [
+          el("button", {
+            class: "dms-btn dms-btn-sm dms-btn-ghost",
+            style: { flex: "1" },
+            onclick: function () { overlay.remove(); resolve(); }
+          }, ["\u7a0d\u540e\u518d\u8bf4"]),
+          el("button", {
+            class: "dms-btn dms-btn-sm dms-btn-primary",
+            style: { flex: "1" },
+            onclick: function () {
+              var doFact = factCb.checked;
+              var doShort = shortCb.checked;
+              var remember = rememberCb.checked;
+              if (remember) {
+                state.settings.syncToFactMemory = doFact;
+                state.settings.syncToShortTerm = doShort;
+                state.settings.rememberSyncChoice = true;
+                saveSettings(roche, state.settings);
+              } else {
+                state.settings.rememberSyncChoice = false;
+                saveSettings(roche, state.settings);
+              }
+              // 标记当前日记的同步状态
+              if (state.currentDiary) {
+                state.currentDiary.shortTermSync = doShort;
+                state.currentDiary.factSync = doFact;
+                state.currentDiary.updatedAt = Date.now();
+              }
+              var promises = [];
+              if (doFact) {
+                promises.push(syncFact(roche, ctx, diaryText).catch(function (e) { console.error("[DMS] fact sync fail", e); }));
+              }
+              // 交换模式：短期记忆延后到"完成交换"按钮时注入
+              // 非交换模式：立即注入
+              if (doShort && !state.settings.swapMode) {
+                promises.push(syncShortTerm(roche, ctx, state.currentDiary).catch(function (e) { console.error("[DMS] short sync fail", e); }));
+              }
+              Promise.all(promises).then(function () {
+                return saveCurrentDiary();
+              }).then(function () {
+                overlay.remove();
+                resolve();
+                var msg = doFact && doShort ? "\u5df2\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6\u4e0e\u77ed\u671f\u8bb0\u5fc6"
+                  : doFact ? "\u5df2\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"
+                  : doShort ? (state.settings.swapMode ? "\u5df2\u9009\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6\uff0c\u5b8c\u6210\u4ea4\u6362\u540e\u6ce8\u5165" : "\u5df2\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6")
+                  : "\u5df2\u8df3\u8fc7\u540c\u6b65";
+                toast(msg);
+              });
+            }
+          }, ["\u786e\u8ba4\u540c\u6b65"])
+        ]);
+        dlg.appendChild(btnRow);
+
+        overlay.appendChild(dlg);
+        overlay.addEventListener("click", function (e) { if (e.target === overlay) { overlay.remove(); resolve(); } });
+        document.body.appendChild(overlay);
+      });
+    }
+
+    /* ---------- 通过 RocheToolkit 把交换日记作为系统消息注入主聊天 ---------- */
+    // 把 char 日记分块、user 的便签/表情包贴纸、彼此的批注整理成一条系统消息注入主聊天
+    function syncShortTerm(roche, ctx, diary) {
+      if (!diary) return Promise.resolve();
+      var cid = ctx && ctx.conversationId;
+      var text = buildShortTermInjectText(diary);
+      if (!text) return Promise.resolve();
+      // 优先用 RocheToolkit.simulateSystemNotice 注入系统消息
+      if (window.RocheToolkit && typeof window.RocheToolkit.simulateSystemNotice === "function") {
+        try {
+          var r = window.RocheToolkit.simulateSystemNotice(cid, text, "diary");
+          return Promise.resolve(r).catch(function (e) { console.error("[DMS] simulateSystemNotice fail", e); });
+        } catch (e) { console.error("[DMS] simulateSystemNotice throw", e); }
+      }
+      // 回退：写入短期记忆 API
+      if (roche.memory && roche.memory.writeShortTerm) {
+        return roche.memory.writeShortTerm({ conversationId: cid, content: text }).catch(function () {});
+      }
+      return Promise.resolve();
+    }
+
+    /* ---------- 拼装短期记忆注入文本（按分块联动便签/贴纸） ---------- */
+    function buildShortTermInjectText(diary) {
+      if (!diary) return "";
+      var charName = diary.charName || "TA";
+      var userName = diary.userName || "\u7528\u6237";
+      var dateKey = diary.dateKey || "";
+      var parts = [];
+
+      parts.push("\u3010\u4ea4\u6362\u65e5\u8bb0 \u00b7 " + dateKey + "\u3011");
+      parts.push("\u4ee5\u4e0b\u662f " + userName + " \u548c " + charName + " \u4eca\u5929\u5199\u7ed9\u5bf9\u65b9\u770b\u7684\u4ea4\u6362\u65e5\u8bb0\u3002\u5305\u542b\u5f7c\u6b64\u7559\u4e0b\u7684\u4fbf\u7b7e\u4e0e\u8868\u60c5\u8d34\u7eb8\uff0c\u8bf7\u5728\u4e3b\u804a\u5929\u4e2d\u81ea\u7136\u5730\u56de\u5e94\u8fd9\u4e9b\u5185\u5bb9\u3002");
+
+      // ===== char 的日记 + user 给 char 留的便签/贴纸（按块关联）=====
+      if (diary.charDiary && diary.charDiary.trim()) {
+        parts.push("\n\u2014\u2014\u2014\u2014\u2014");
+        parts.push("\u3010" + charName + " \u7ed9 " + userName + " \u7684\u65e5\u8bb0\u3011");
+        var charBlocks = parseBlocks(diary.charDiary);
+        var charAnnots = (diary.annotations || []).filter(function (a) { return a.type === "sticky"; });
+        var charStickers = diary.stickers || [];
+        if (charBlocks.length > 1 || (charBlocks.length === 1 && charBlocks[0].id !== "_main")) {
+          charBlocks.forEach(function (blk) {
+            parts.push("\n\u3010\u5757" + blk.id + "\u3011");
+            parts.push(blk.content);
+            // 关联此块的便签
+            var blkAnnots = charAnnots.filter(function (a) { return a.blockId === blk.id; });
+            blkAnnots.forEach(function (a) {
+              parts.push("  \u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            });
+            // 关联此块的贴纸
+            var blkStk = charStickers.filter(function (s) { return s.blockId === blk.id; });
+            blkStk.forEach(function (s) {
+              parts.push("  \u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+            });
+          });
+        } else {
+          // 无分块，整体注入
+          parts.push(diary.charDiary);
+          charAnnots.forEach(function (a) {
+            parts.push("\u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+          });
+          charStickers.forEach(function (s) {
+            parts.push("\u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+          });
+        }
+      }
+
+      // ===== user 的日记 + char 给 user 留的批注 =====
+      if (diary.userDiary && diary.userDiary.trim()) {
+        parts.push("\n\u2014\u2014\u2014\u2014\u2014");
+        parts.push("\u3010" + userName + " \u7ed9 " + charName + " \u7684\u65e5\u8bb0\u3011");
+        parts.push(diary.userDiary);
+        var charAnnots2 = (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; });
+        charAnnots2.forEach(function (a) {
+          parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+        });
+      }
+
+      return parts.join("\n");
     }
 
     /* ---------- 让TA批注我的日记 ---------- */
@@ -1848,7 +2612,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.1.2",
+    version: "2.2.0",
     apps: [
       {
         id: "daily-memory-summary-home",

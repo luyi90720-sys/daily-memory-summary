@@ -1,19 +1,19 @@
-{
-  "id": "daily-memory-summary",
-  "name": "手账日记",
-  "version": "2.1.2",
-  "description": "手账本风格的交换日记 - char写日记，user手写日记，互相批注涂鸦，可选同步到事实记忆。",
-  "author": "Roche Plugin",
-  "entry": "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
-  "hash": "",
-  "permissions": [
-    "persona:read",
-    "character:read",
-    "memory:read",
-    "memory:write",
-    "worldbook:read",
-    "ai:chat",
-    "storage",
-    "ui"
-  ]
+﻿{
+    "id":  "daily-memory-summary",
+    "name":  "手账日记",
+    "version":  "2.2.0",
+    "description":  "手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签，可同步到事实/短期记忆。",
+    "author":  "Roche Plugin",
+    "entry":  "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",
+    "hash":  "",
+    "permissions":  [
+                        "persona:read",
+                        "character:read",
+                        "memory:read",
+                        "memory:write",
+                        "worldbook:read",
+                        "ai:chat",
+                        "storage",
+                        "ui"
+                    ]
 }

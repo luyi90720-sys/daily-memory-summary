@@ -977,6 +977,20 @@
       syncDialogShown: false
     };
 
+    /* 10款内置便签样式配置 - 每款完全不同的风格（提前定义，供 buildSettingsPanel 等同步调用使用） */
+    var STICKY_STYLES = [
+      { id: 0, name: "便利贴", color: "#FFE4A0", css: "note-0", desc: "经典暖黄+胶带感" },
+      { id: 1, name: "樱花笺", color: "#FFE0E6", css: "note-1", desc: "粉色圆角+蕾丝边" },
+      { id: 2, name: "牛皮纸", color: "#D4B896", css: "note-2", desc: "复古棕底+左色带" },
+      { id: 3, name: "拍立得", color: "#FAF8F0", css: "note-3", desc: "白底+下宽边相纸" },
+      { id: 4, name: "胶带条", color: "#FFF9C4", css: "note-4", desc: "半透明+顶胶带" },
+      { id: 5, name: "糖果圆", color: "#F8BBD0", css: "note-5", desc: "大圆角+渐变粉" },
+      { id: 6, name: "紫印泥", color: "#E1D5F0", css: "note-6", desc: "紫底+粗顶边斜体" },
+      { id: 7, name: "童趣橙", color: "#FFCCBC", css: "note-7", desc: "橙底+波浪圆角" },
+      { id: 8, name: "药签", color: "#B2DFDB", css: "note-8", desc: "青底+左侧折角" },
+      { id: 9, name: "柠信封", color: "#F5F4C3", css: "note-9", desc: "黄底+双线边" }
+    ];
+
     function toast(msg) {
       var t = qs(".dms-toast", root);
       if (!t) { t = el("div", { class: "dms-toast" }); root.appendChild(t); }
@@ -1788,20 +1802,6 @@
       }
       saveCurrentDiary();
     }
-
-    /* 10款内置便签样式配置 - 每款完全不同的风格 */
-    var STICKY_STYLES = [
-      { id: 0, name: "便利贴", color: "#FFE4A0", css: "note-0", desc: "经典暖黄+胶带感" },
-      { id: 1, name: "樱花笺", color: "#FFE0E6", css: "note-1", desc: "粉色圆角+蕾丝边" },
-      { id: 2, name: "牛皮纸", color: "#D4B896", css: "note-2", desc: "复古棕底+左色带" },
-      { id: 3, name: "拍立得", color: "#FAF8F0", css: "note-3", desc: "白底+下宽边相纸" },
-      { id: 4, name: "胶带条", color: "#FFF9C4", css: "note-4", desc: "半透明+顶胶带" },
-      { id: 5, name: "糖果圆", color: "#F8BBD0", css: "note-5", desc: "大圆角+渐变粉" },
-      { id: 6, name: "紫印泥", color: "#E1D5F0", css: "note-6", desc: "紫底+粗顶边斜体" },
-      { id: 7, name: "童趣橙", color: "#FFCCBC", css: "note-7", desc: "橙底+波浪圆角" },
-      { id: 8, name: "药签", color: "#B2DFDB", css: "note-8", desc: "青底+左侧折角" },
-      { id: 9, name: "柠信封", color: "#F5F4C3", css: "note-9", desc: "黄底+双线边" }
-    ];
 
     function makeStickyNote(annot, pageEl) {
       var styleId = annot.styleId != null ? annot.styleId : 0;
@@ -3562,10 +3562,20 @@
           getCustomNoteStyles(roche).then(function (list) { applyCustomNoteStyles(list); }).catch(function () {});
           var root = document.createElement("div");
           root.className = ROOT_CLASS;
+          // 先挂载 root，避免后续异步/同步异常导致白屏
+          container.appendChild(root);
+          container._dms_root = root;
           getSettings(roche).then(function (settings) {
-            renderApp(roche, root, settings);
-            container.appendChild(root);
-            container._dms_root = root;
+            try {
+              renderApp(roche, root, settings);
+            } catch (e) {
+              console.error("[DMS] renderApp 同步渲染失败:", e);
+              root.innerHTML = "";
+              root.appendChild(el("div", { class: "dms-wrap" }, [el("div", { class: "dms-card" }, [el("div", { class: "dms-empty" }, ["渲染失败: " + (e && e.message || e) + (e && e.stack ? "\n" + e.stack : "")])])]));
+            }
+          }).catch(function (e) {
+            console.error("[DMS] getSettings 失败:", e);
+            root.appendChild(el("div", { class: "dms-wrap" }, [el("div", { class: "dms-card" }, [el("div", { class: "dms-empty" }, ["初始化失败: " + (e && e.message || e)])])]));
           });
         },
         unmount: function (container, roche) {

@@ -23,10 +23,18 @@
   var ROOT_CLASS = "roche-plugin-dms";
   var STYLE_ID = ROOT_CLASS + "-style";
   var STORAGE_SETTINGS = "dms-settings";
-  var STORAGE_DIARIES = "dms-diaries";
+  var STORAGE_DIARIES = "dms-diaries";               // 旧版统一存储（启动时自动迁移到下面两个）
+  var STORAGE_DIARIES_SWAP = "dms-diaries-swap";     // 交换日记存储（user 与 char 交互）
+  var STORAGE_DIARIES_SOLO = "dms-diaries-solo";     // char 独自日记存储（只看char日记/整理记忆）
   var STORAGE_STICKERS = "dms-stickers";
   var STORAGE_CUSTOM_NOTES = "dms-custom-notes";   // user自定义便签样式（CSS）
   var STORAGE_PRESETS = "dms-presets";              // 思维链/格式预设
+  var MIGRATED_KEY = "dms-migrated-v2.4";           // 旧数据迁移标记
+
+  /* 根据 mode 返回对应存储键 */
+  function storageKeyFor(mode) {
+    return mode === "swap" ? STORAGE_DIARIES_SWAP : STORAGE_DIARIES_SOLO;
+  }
 
   /* ---------- 默认设置 ---------- */
   var DEFAULT_SETTINGS = {
@@ -81,6 +89,7 @@
     messageLimit: 5000,
     defaultStickyStyle: null,       // user 自己添加便签时的默认样式（null=随机）
     defaultCharStickyStyle: null,   // char 给 user 写便签时的默认样式（null=随机）
+    hideCharStickies: false,        // 隐藏 TA 给 user 贴的便签（避免遮挡）
     userThinkingChain: "",          // 兼容旧设置（已弃用，不再使用）
     userFormat: ""                  // 兼容旧设置（已弃用，不再使用）
   };
@@ -147,7 +156,7 @@
     }).catch(function () { return []; });
   }
   function loadLong(roche, cid) {
-    return roche.memory.getLongTerm({ conversationId: cid, limit: 100 })
+    return roche.memory.getLongTerm({ conversationId: cid, limit: 1000 })
       .catch(function () { return { core: null, facts: [], vectors: [] }; });
   }
   function loadWbTree(roche) {
@@ -362,23 +371,427 @@
   }
   function saveSettings(roche, s) { return roche.storage.set(STORAGE_SETTINGS, s); }
 
-  /* ---------- 日记存储 ---------- */
-  function getDiaries(roche) {
-    return roche.storage.get(STORAGE_DIARIES).then(function (s) { return s || {}; }).catch(function () { return {}; });
+  /* ---------- 日记存储 ----------
+   * 两种存储分别保存「交换日记」和「char独自日记」
+   * 通过 mode 参数区分：mode="swap" → 交换日记；mode="solo" → char独自日记
+   * 旧数据（STORAGE_DIARIES）在启动时自动迁移到对应存储
+   */
+  function getDiariesByMode(roche, mode) {
+    var key = storageKeyFor(mode);
+    return roche.storage.get(key).then(function (s) { return s || {}; }).catch(function () { return {}; });
   }
-  function getDiary(roche, key) {
-    return getDiaries(roche).then(function (all) { return all[key] || null; });
+  function getDiaryByMode(roche, mode, diaryKey) {
+    return getDiariesByMode(roche, mode).then(function (all) { return all[diaryKey] || null; });
   }
-  function saveDiary(roche, key, data) {
-    return getDiaries(roche).then(function (all) {
-      all[key] = data;
-      return roche.storage.set(STORAGE_DIARIES, all);
+  function saveDiaryByMode(roche, mode, diaryKey, data) {
+    return getDiariesByMode(roche, mode).then(function (all) {
+      all[diaryKey] = data;
+      return roche.storage.set(storageKeyFor(mode), all);
     });
   }
-  function deleteDiary(roche, key) {
-    return getDiaries(roche).then(function (all) {
+  function deleteDiaryByMode(roche, mode, diaryKey) {
+    return getDiariesByMode(roche, mode).then(function (all) {
+      delete all[diaryKey];
+      return roche.storage.set(storageKeyFor(mode), all);
+    });
+  }
+
+  /* 获取两种模式全部日记（历史列表用）—— 返回 {swap: {...}, solo: {...}} */
+  function getAllDiariesBothModes(roche) {
+    return Promise.all([
+      getDiariesByMode(roche, "swap"),
+      getDiariesByMode(roche, "solo")
+    ]).then(function (results) {
+      return { swap: results[0], solo: results[1] };
+    });
+  }
+
+  /* ---------- 旧数据迁移 ---------- */
+  function migrateOldDiariesIfNeeded(roche) {
+    return roche.storage.get(MIGRATED_KEY).then(function (done) {
+      if (done) return;  // 已迁移过
+      return roche.storage.get(STORAGE_DIARIES).then(function (oldAll) {
+        if (!oldAll || typeof oldAll !== "object") {
+          return roche.storage.set(MIGRATED_KEY, true);
+        }
+        var swapAll = {}, soloAll = {};
+        Object.keys(oldAll).forEach(function (k) {
+          var it = oldAll[k];
+          // 旧日记没有 mode 字段：根据 userDiary 是否有内容判断
+          // 有 userDiary 的归交换日记，否则归 char 独自日记
+          var mode = (it.userDiary && it.userDiary.trim()) ? "swap" : "solo";
+          it.mode = mode;
+          if (mode === "swap") swapAll[k] = it;
+          else soloAll[k] = it;
+        });
+        return Promise.all([
+          roche.storage.set(STORAGE_DIARIES_SWAP, swapAll),
+          roche.storage.set(STORAGE_DIARIES_SOLO, soloAll),
+          roche.storage.set(MIGRATED_KEY, true)
+        ]);
+      });
+    }).catch(function () {});
+  }
+
+  /* ---------- 周期整理存储（按周/半月/月整理的日记） ----------
+   * 独立存储键，与 solo/swap 分开
+   * key 格式: "<cid>:<periodKey>"，periodKey 如 "2026-W30"、"2026-H2-07"、"2026-07"
+   * 数据结构: { ..., period: "week"|"halfmonth"|"month", periodKey, dateRange: [startKey, endKey], source: "chat"|"daily", sourceDiaries: [dateKey,...] }
+   */
+  var STORAGE_DIARIES_PERIOD = "dms-diaries-period";
+
+  function getPeriodDiaries(roche) {
+    return roche.storage.get(STORAGE_DIARIES_PERIOD).then(function (s) { return s || {}; }).catch(function () { return {}; });
+  }
+  function savePeriodDiary(roche, key, data) {
+    return getPeriodDiaries(roche).then(function (all) {
+      all[key] = data;
+      return roche.storage.set(STORAGE_DIARIES_PERIOD, all);
+    });
+  }
+  function deletePeriodDiary(roche, key) {
+    return getPeriodDiaries(roche).then(function (all) {
       delete all[key];
-      return roche.storage.set(STORAGE_DIARIES, all);
+      return roche.storage.set(STORAGE_DIARIES_PERIOD, all);
+    });
+  }
+
+  /* 计算 periodKey 和日期范围 */
+  function getWeekKey(d) {
+    // ISO 周序号
+    var x = new Date(d);
+    x.setHours(0, 0, 0, 0);
+    var day = x.getDay() || 7;  // 周日=7
+    var thursday = new Date(x);
+    thursday.setDate(x.getDate() + (4 - day));
+    var yearStart = new Date(thursday.getFullYear(), 0, 1);
+    var weekNum = Math.ceil(((thursday - yearStart) / 86400000 + 1) / 7);
+    return thursday.getFullYear() + "-W" + pad2(weekNum);
+  }
+  function getMonthKey(d) {
+    var x = new Date(d);
+    return x.getFullYear() + "-" + pad2(x.getMonth() + 1);
+  }
+  function getHalfMonthKey(d) {
+    var x = new Date(d);
+    var day = x.getDate();
+    var half = day <= 15 ? 1 : 2;
+    return x.getFullYear() + "-H" + half + "-" + pad2(x.getMonth() + 1);
+  }
+  function getPeriodRange(period, dateRef) {
+    // 返回 [startDateKey, endDateKey] 闭区间
+    var d = new Date(dateRef);
+    var start, end;
+    if (period === "week") {
+      var day = d.getDay() || 7;
+      start = new Date(d); start.setDate(d.getDate() - day + 1); start.setHours(0,0,0,0);
+      end = new Date(start); end.setDate(start.getDate() + 6);
+    } else if (period === "halfmonth") {
+      var day2 = d.getDate();
+      if (day2 <= 15) {
+        start = new Date(d.getFullYear(), d.getMonth(), 1);
+        end = new Date(d.getFullYear(), d.getMonth(), 15);
+      } else {
+        start = new Date(d.getFullYear(), d.getMonth(), 16);
+        end = new Date(d.getFullYear(), d.getMonth() + 1, 0); // 月末
+      }
+    } else { // month
+      start = new Date(d.getFullYear(), d.getMonth(), 1);
+      end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+    }
+    return [toDateKey(start), toDateKey(end)];
+  }
+  function getPeriodLabel(period) {
+    return period === "week" ? "按周" : period === "halfmonth" ? "按半月" : "按月";
+  }
+
+  /* ---------- 周期整理生成函数 ----------
+   * period: "week" | "halfmonth" | "month"
+   * source: "chat"=整理聊天记录 | "daily"=整理已生成的按日日记
+   * dateRef: 基准日期（用于确定周期范围）
+   */
+  function generatePeriodDiary(roche, state, period, source, dateRef) {
+    var conv = state.selectedConv;
+    if (!conv) return Promise.reject(new Error("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"));
+    var cid = conv.conversationId || conv.id;
+    var range = getPeriodRange(period, dateRef);
+    var startKey = range[0], endKey = range[1];
+    var periodKey = period === "week" ? getWeekKey(dateRef)
+                   : period === "halfmonth" ? getHalfMonthKey(dateRef)
+                   : getMonthKey(dateRef);
+    var diaryKey = cid + ":" + periodKey;
+
+    // 构造 ctx（复用 buildCtx，但 dayShort 按范围聚合）
+    return buildCtxForRange(roche, state, startKey, endKey, source).then(function (ctx) {
+      if (!ctx.dayShort.length && source === "chat") {
+        return Promise.reject(new Error("\u8be5\u5468\u671f\u5185\u65e0\u804a\u5929\u8bb0\u5f55"));
+      }
+      if (source === "daily" && (!ctx.dailyDiaries || !ctx.dailyDiaries.length)) {
+        return Promise.reject(new Error("\u8be5\u5468\u671f\u5185\u65e0\u5df2\u751f\u6210\u7684\u6309\u65e5\u65e5\u8bb0"));
+      }
+      var msgs = buildPeriodDiaryMessages(ctx, state.settings, period, source, startKey, endKey);
+      return callAI(roche, msgs, 0.7).then(function (text) {
+        var diaryData = {
+          conversationId: cid,
+          charName: ctx.charName,
+          userName: ctx.userName,
+          dateKey: ctx.dateKey,
+          isGroup: ctx.isGroup,
+          mode: "period",
+          period: period,
+          periodKey: periodKey,
+          dateRange: range,
+          source: source,
+          sourceDiaries: ctx.dailyDiaries ? ctx.dailyDiaries.map(function (d) { return d.dateKey; }) : [],
+          charDiary: text || "",
+          userDiary: "",
+          annotations: [],
+          stickers: [],
+          charAnnotations: [],
+          ctx: ctx,
+          createdAt: Date.now(),
+          updatedAt: Date.now()
+        };
+        return savePeriodDiary(roche, diaryKey, diaryData).then(function () {
+          return { diaryData: diaryData, diaryKey: diaryKey };
+        });
+      });
+    });
+  }
+
+  /* 构造周期范围上下文：聚合聊天记录或已生成的按日日记 */
+  function buildCtxForRange(roche, state, startKey, endKey, source) {
+    var conv = state.selectedConv;
+    var cid = conv.conversationId || conv.id;
+    var info = convInfo(conv);
+    var startDate = parseDateInput(startKey);
+    var endDate = parseDateInput(endKey);
+
+    return Promise.all([
+      loadShort(roche, cid, state.settings.messageLimit || 5000),
+      loadChar(roche, conv),
+      loadPersona(roche, conv),
+      loadLong(roche, cid),
+      state.settings.useWorldbook ? loadWbText(roche, state.settings) : Promise.resolve(""),
+      source === "daily" ? getDiariesByMode(roche, "solo") : Promise.resolve({})
+    ]).then(function (results) {
+      var allMsgs = results[0];
+      var ch = results[1];
+      var persona = results[2];
+      var mem = results[3];
+      var wb = results[4];
+      var soloDiaries = results[5] || {};
+
+      // 按日期范围过滤消息
+      var startTime = startOfDay(startDate).getTime();
+      var endTime = endOfDay(endDate);
+      var rangeMsgs = (allMsgs || []).filter(function (m) {
+        var t = toMs(m.timestamp);
+        return t >= startTime && t < endTime;
+      }).sort(function (a, b) { return toMs(a.timestamp) - toMs(b.timestamp); });
+
+      var shortText = msgsToText(rangeMsgs);
+
+      // 收集范围内的按日日记
+      var dailyDiaries = [];
+      if (source === "daily") {
+        Object.keys(soloDiaries).forEach(function (key) {
+          var parts = key.split(":");
+          if (parts[0] === cid) {
+            var dk = parts[1];
+            if (dk >= startKey && dk <= endKey) {
+              var dd = soloDiaries[key];
+              if (dd && dd.charDiary && dd.charDiary.trim()) {
+                dailyDiaries.push({ dateKey: dk, charDiary: dd.charDiary, charName: dd.charName });
+              }
+            }
+          }
+        });
+        dailyDiaries.sort(function (a, b) { return a.dateKey < b.dateKey ? -1 : 1; });
+      }
+
+      return {
+        conversationId: cid,
+        isGroup: info.isGroup,
+        userName: persona.name || info.name || "\u7528\u6237",
+        userPersona: persona.text || "",
+        charName: ch.name || info.name,
+        charText: ch.text || "",
+        dayShort: rangeMsgs,
+        shortText: shortText,
+        coreText: mem.core ? coreToText(mem.core) : "",
+        factsText: mem.facts ? factsToText(mem.facts) : "",
+        wbText: wb || "",
+        dateKey: startKey + "~" + endKey,
+        dailyDiaries: dailyDiaries
+      };
+    });
+  }
+
+  /* 构造周期整理的 messages */
+  function buildPeriodDiaryMessages(ctx, settings, period, source, startKey, endKey) {
+    var periodLabel = getPeriodLabel(period);
+    var sys = [];
+    sys.push("\u4f60\u662f " + (ctx.charName || "\u89d2\u8272") + "\u3002\u8bf7\u4ee5\u7b2c\u4e00\u4eba\u79f0\u5199\u4e00\u7bc7" + periodLabel + " (" + startKey + " \u81f3 " + endKey + ") \u7684\u65e5\u8bb0\u603b\u7ed3\u3002");
+    if (ctx.userPersona) sys.push("\u3010\u7528\u6237\u4eba\u8bbe\u3011" + ctx.userPersona);
+    if (ctx.charText) sys.push("\u3010\u89d2\u8272\u4eba\u8bbe\u3011" + ctx.charText);
+    if (settings.showCore && ctx.coreText) sys.push("\u3010\u6838\u5fc3\u8bb0\u5fc6\u3011" + ctx.coreText);
+    if (settings.showFacts && ctx.factsText) sys.push("\u3010\u4e8b\u5b9e\u8bb0\u5fc6\u3011" + ctx.factsText);
+    if (settings.useWorldbook && ctx.wbText) sys.push("\u3010\u4e16\u754c\u4e66\u3011" + ctx.wbText);
+
+    var userMsg = "";
+    if (source === "chat") {
+      userMsg = "\u3010" + periodLabel + "\u804a\u5929\u8bb0\u5f55 (" + startKey + " \u2014 " + endKey + ")\u3011\n" + (ctx.shortText || "\uff08\u65e0\u8bb0\u5f55\uff09");
+    } else {
+      userMsg = "\u3010" + periodLabel + "\u6309\u65e5\u65e5\u8bb0\u96c6 (" + startKey + " \u2014 " + endKey + ")\u3011\n";
+      (ctx.dailyDiaries || []).forEach(function (d) {
+        userMsg += "\n\u3010" + d.dateKey + " " + (d.charName || "") + "\u7684\u65e5\u8bb0\u3011\n" + d.charDiary + "\n";
+      });
+    }
+
+    if (settings.charThinkingChain) {
+      sys.push("\u3010\u601d\u7ef4\u94fe\u3011" + settings.charThinkingChain);
+    }
+    sys.push("\u8bf7\u7528 " + (ctx.charName || "\u4f60") + " \u7684\u53e3\u543b\u5199\u4e0b\u8fd9\u6bb5\u65f6\u95f4\u7684\u603b\u7ed3\uff0c\u6309\u4e8b\u4ef6\u987a\u5e8f\u6574\u7406\uff0c\u4fdd\u7559\u60c5\u611f\u4e0e\u7ec6\u8282\u3002\u6bcf\u6bb5100~200\u5b57\uff0c3~6\u6bb5\u3002");
+
+    return [
+      { role: "system", content: sys.join("\n\n") },
+      { role: "user", content: userMsg }
+    ];
+  }
+
+  /* ---------- 从长期记忆（事实记忆）挑选按日日记 ----------
+   * 读取事实记忆，按 when 字段判断是否为按日日记
+   * 放宽限制：when 可以是 YYYY-MM-DD、YYYY/MM/DD、YYYY-MM 等格式
+   * 按 user 设置的最低字数过滤
+   */
+  function pickDailyDiariesFromFactMemory(roche, cid, minChars) {
+    return loadLong(roche, cid).then(function (lt) {
+      var facts = (lt && lt.facts) || [];
+      minChars = minChars || 0;
+      var picked = [];
+      facts.forEach(function (f) {
+        var text = f.summaryText || f.action || f.text || "";
+        var when = f.when || f.date || f.dateKey || f.createdAt || "";
+        // 尝试从 when 中提取 YYYY-MM-DD 格式
+        var dateKey = normalizeDateKey(when);
+        // 过滤：有日期、文本长度达标
+        if (dateKey && text.length >= minChars) {
+          picked.push({
+            dateKey: dateKey,
+            text: text,
+            fact: f
+          });
+        }
+      });
+      // 按日期排序（新到旧）
+      picked.sort(function (a, b) { return a.dateKey > b.dateKey ? -1 : 1; });
+      return picked;
+    });
+  }
+
+  /* 将各种日期格式统一为 YYYY-MM-DD */
+  function normalizeDateKey(when) {
+    if (!when) return "";
+    var s = String(when);
+    // 时间戳（毫秒或秒）
+    if (/^\d{10,13}$/.test(s)) {
+      var ms = s.length === 10 ? parseInt(s, 10) * 1000 : parseInt(s, 10);
+      var d = new Date(ms);
+      if (!isNaN(d.getTime())) return toDateKey(d);
+    }
+    // YYYY-MM-DD 或 YYYY/MM/DD
+    var m = s.match(/(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})/);
+    if (m) return m[1] + "-" + pad2(parseInt(m[2], 10)) + "-" + pad2(parseInt(m[3], 10));
+    // YYYY-MM
+    m = s.match(/(\d{4})[-\/](\d{1,2})/);
+    if (m) return m[1] + "-" + pad2(parseInt(m[2], 10)) + "-01";
+    // YYYY
+    if (/^\d{4}$/.test(s)) return s + "-01-01";
+    return "";
+  }
+
+  /* ---------- 轮询批量生成按日日记 ----------
+   * dates: Array<"YYYY-MM-DD"> 要生成的日期列表
+   * onProgress: 可选回调 (currentIndex, total, success, errorMsg)
+   * 依次生成，避免并发导致 API 限流
+   */
+  function batchGenerateDailyDiaries(roche, state, dates, onProgress) {
+    var conv = state.selectedConv;
+    if (!conv) return Promise.reject(new Error("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"));
+    var cid = conv.conversationId || conv.id;
+    var results = [];
+    var idx = 0;
+
+    function next() {
+      if (idx >= dates.length) {
+        return Promise.resolve(results);
+      }
+      var currentDate = dates[idx];
+      var diaryKey = cid + ":" + currentDate;
+      var dateObj = parseDateInput(currentDate);
+
+      // 先检查是否已存在
+      return getDiaryByMode(roche, "solo", diaryKey).then(function (existing) {
+        if (existing && existing.charDiary && !state.overwriteExisting) {
+          results.push({ dateKey: currentDate, success: true, skipped: true, msg: "\u5df2\u5b58\u5728\uff0c\u8df3\u8fc7" });
+          if (onProgress) onProgress(idx, dates.length, true, "\u5df2\u5b58\u5728\uff0c\u8df3\u8fc7");
+          idx++;
+          return next();
+        }
+        // 构造临时 state
+        var tempState = Object.assign({}, state);
+        tempState.selectedDate = dateObj;
+        return buildCtx(roche, tempState, dateObj).then(function (ctx) {
+          if (!ctx.dayShort.length) {
+            results.push({ dateKey: currentDate, success: false, msg: "\u5f53\u65e5\u65e0\u804a\u5929\u8bb0\u5f55" });
+            if (onProgress) onProgress(idx, dates.length, false, "\u5f53\u65e5\u65e0\u804a\u5927\u8bb0\u5f55");
+            idx++;
+            return next();
+          }
+          return generateCharDiary(roche, ctx, state.settings).then(function (text) {
+            var diaryData = {
+              conversationId: ctx.conversationId,
+              charName: ctx.charName,
+              userName: ctx.userName,
+              dateKey: ctx.dateKey,
+              isGroup: ctx.isGroup,
+              mode: "solo",
+              charDiary: text || "",
+              userDiary: "",
+              annotations: [],
+              stickers: [],
+              charAnnotations: [],
+              ctx: ctx,
+              createdAt: Date.now(),
+              updatedAt: Date.now()
+            };
+            return saveDiaryByMode(roche, "solo", diaryKey, diaryData).then(function () {
+              results.push({ dateKey: currentDate, success: true, msg: "\u751f\u6210\u6210\u529f" });
+              if (onProgress) onProgress(idx, dates.length, true, "\u751f\u6210\u6210\u529f");
+              idx++;
+              return next();
+            });
+          });
+        }).catch(function (e) {
+          results.push({ dateKey: currentDate, success: false, msg: e && e.message || String(e) });
+          if (onProgress) onProgress(idx, dates.length, false, e && e.message || String(e));
+          idx++;
+          return next();
+        });
+      });
+    }
+
+    return next();
+  }
+
+  /* 辅助：列出会话中有聊天记录的日期（用于轮询选天） */
+  function listAvailableDates(roche, state) {
+    var conv = state.selectedConv;
+    if (!conv) return Promise.resolve([]);
+    var cid = conv.conversationId || conv.id;
+    return loadShort(roche, cid, state.settings.messageLimit || 5000).then(function (msgs) {
+      return coveredDays(msgs);
     });
   }
 
@@ -545,6 +958,14 @@
       ".dms-float .dms-hint{color:var(--ink-mute);font-size:11px;line-height:1.5;}",
       ".dms-float .dms-page-title{font-size:15px;font-weight:600;color:var(--ink);}",
       ".dms-float h3{font-size:14px;font-weight:600;color:var(--ink);margin:0 0 8px 0;}",
+      "/* 便签/表情操作菜单（拖拽/换样式/删除）*/",
+      ".dms-sticky-action-menu.dms-float{",
+      "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "  padding:8px;min-width:120px;",
+      "}",
+      ".dms-sticky-action-menu .dms-sticky-action-title{font-size:11px;color:var(--ink-mute);margin-bottom:6px;text-align:center;}",
+      ".dms-sticky-action-menu .dms-sticky-action-btns{display:flex;flex-direction:column;gap:4px;}",
+      ".dms-sticky-action-menu .dms-btn{width:100%;text-align:center;}",
       "." + ROOT_CLASS + " *{box-sizing:border-box;margin:0;padding:0;}",
       "." + ROOT_CLASS + " .dms-handwritten{font-family:'Ma Shan Zheng','KaiTi','STKaiti',cursive;}",
       "",
@@ -797,12 +1218,12 @@
       "." + ROOT_CLASS + " .dms-page-body{position:relative;z-index:1;padding:14px 16px;min-height:200px;}",
       "." + ROOT_CLASS + " .dms-diary-text{",
       "  font-size:14px;line-height:32px;color:var(--ink);white-space:pre-wrap;word-break:break-word;",
-      "  position:relative;",
+      "  position:relative;-webkit-user-select:text;user-select:text;-webkit-touch-callout:default;",
       "}",
       "/* 块：自然段落感，不显示块号标签 */",
-      "." + ROOT_CLASS + " .dms-block{position:relative;margin-bottom:10px;padding:2px 4px;transition:background .15s ease;}",
+      "." + ROOT_CLASS + " .dms-block{position:relative;margin-bottom:10px;padding:2px 4px;transition:background .15s ease;-webkit-user-select:text;user-select:text;}",
       "." + ROOT_CLASS + " .dms-block-gap{margin-top:14px;padding-top:12px;border-top:1px dashed rgba(180,160,110,0.18);}",
-      "." + ROOT_CLASS + " .dms-block-text{font-size:14px;line-height:32px;}",
+      "." + ROOT_CLASS + " .dms-block-text{font-size:14px;line-height:32px;-webkit-user-select:text;user-select:text;}",
       "",
       "/* ===== 批注样式 ===== */",
       "." + ROOT_CLASS + " .dms-annot{position:relative;cursor:pointer;}",
@@ -834,10 +1255,11 @@
       "." + ROOT_CLASS + " .dms-sticky{",
       "  position:absolute;z-index:5;max-width:180px;min-width:80px;padding:10px 12px;font-size:12px;",
       "  color:var(--ink);box-shadow:2px 3px 8px rgba(74,60,40,0.2);",
-      "  border-radius:2px;cursor:move;line-height:1.5;touch-action:none;",
+      "  border-radius:2px;cursor:move;line-height:1.5;touch-action:auto;",
       "  transform:rotate(-1deg);font-family:'Ma Shan Zheng','KaiTi',cursive;",
       "  word-wrap:break-word;word-break:break-word;",
       "}",
+      "." + ROOT_CLASS + " .dms-sticky.dragging{touch-action:none;z-index:20;}",
       "/* 10款内置便签样式 - 每款完全不同的风格 */",
       // 0. 经典便利贴 - 暖黄纸+胶带感
       "." + ROOT_CLASS + " .dms-sticky.note-0{background:linear-gradient(180deg,#FFE4A0 0%,#FFD478 100%);transform:rotate(-1.5deg);border-radius:2px;border-top:6px solid #E6B655;box-shadow:2px 3px 10px rgba(230,182,85,0.3),inset 0 0 0 1px rgba(255,255,255,0.3);}",
@@ -1035,6 +1457,9 @@
       lastError: "",
       view: "cover",
       subView: null,        // 交换模式子视图: null(非交换/默认双页) | "userWrite" | "charDiary"
+      diaryMode: "solo",     // "swap"=交换日记 | "solo"=char独自日记（决定使用哪个存储）
+      periodDialog: null,   // 周期整理对话框: null | "period" | "batch" | "pickFromMemory"
+      batchProgress: null,  // 轮询进度: null | {current, total, msg, running}
       currentDiary: null,
       diaryKey: "",
       annotMenuEl: null,
@@ -1195,7 +1620,7 @@
     /* ---------- 内容渲染 ---------- */
     function renderContent() {
       // 清理可能残留在 document.body 上的浮层（便签样式选择器、表情包选择器、批注菜单、同步对话框）
-      [".dms-sticky-style-popup", ".dms-sticker-picker", ".dms-annot-menu", ".dms-sync-overlay"].forEach(function (sel) {
+      [".dms-sticky-style-popup", ".dms-sticker-picker", ".dms-annot-menu", ".dms-sync-overlay", ".dms-sticky-action-menu"].forEach(function (sel) {
         var nodes = document.querySelectorAll(sel);
         nodes.forEach(function (n) { n.remove(); });
       });
@@ -1206,6 +1631,14 @@
         body.appendChild(buildDiaryView());
       } else if (state.view === "history") {
         body.appendChild(buildHistory());
+      } else if (state.view === "periodDialog") {
+        body.appendChild(buildPeriodDialogView());
+      } else if (state.view === "batchDialog") {
+        body.appendChild(buildBatchDialogView());
+      } else if (state.view === "pickFromMemoryDialog") {
+        body.appendChild(buildPickFromMemoryView());
+      } else if (state.view === "periodDiaryView") {
+        body.appendChild(buildPeriodDiaryDisplayView());
       } else {
         body.appendChild(buildCover());
       }
@@ -1355,6 +1788,44 @@
         el("div", { class: "dms-card-sub" }, ["\u67e5\u770b\u4ee5\u524d\u5199\u8fc7\u7684\u65e5\u8bb0\u3002"])
       ]);
       wrap.appendChild(histCard);
+
+      // 高级功能入口
+      var advCard = el("div", { class: "dms-card tape-red dms-fade-in-delay" }, [
+        el("h2", {}, [el("span", { class: "dms-badge" }, ["\u2605"]), " \u8bb0\u5fc6\u6574\u7406"]),
+        el("div", { class: "dms-card-sub" }, ["\u6309\u5468\u671f\u6216\u6279\u91cf\u751f\u6210\u65e5\u8bb0\uff0c\u4ece\u957f\u671f\u8bb0\u5fc6\u6311\u9009\u7d20\u6750\u3002"])
+      ]);
+
+      // 周期整理入口
+      advCard.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-ghost",
+        style: { width: "100%", marginTop: "8px", justifyContent: "flex-start" },
+        onclick: function () {
+          if (!state.selectedConv) { toast("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"); return; }
+          state.view = "periodDialog"; renderContent();
+        }
+      }, ["\u25cb \u6309\u5468/\u534a\u6708/\u6708\u6574\u7406"]));
+
+      // 轮询生成入口
+      advCard.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-ghost",
+        style: { width: "100%", marginTop: "6px", justifyContent: "flex-start" },
+        onclick: function () {
+          if (!state.selectedConv) { toast("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"); return; }
+          state.view = "batchDialog"; renderContent();
+        }
+      }, ["\u25cb \u8f6e\u8be2\u6279\u91cf\u751f\u6210\u6309\u65e5\u65e5\u8bb0"]));
+
+      // 从长期记忆挑选入口
+      advCard.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-ghost",
+        style: { width: "100%", marginTop: "6px", justifyContent: "flex-start" },
+        onclick: function () {
+          if (!state.selectedConv) { toast("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"); return; }
+          state.view = "pickFromMemoryDialog"; renderContent();
+        }
+      }, ["\u25cb \u4ece\u957f\u671f\u8bb0\u5fc6\u6311\u9009\u6309\u65e5\u65e5\u8bb0"]));
+
+      wrap.appendChild(advCard);
 
       return wrap;
     }
@@ -1509,6 +1980,12 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
+          el("button", { class: "dms-tool-btn", title: "\u5207\u6362 TA \u4fbf\u7b7e\u663e\u9690", onclick: function () {
+            state.settings.hideCharStickies = !state.settings.hideCharStickies;
+            saveSettings(roche, state.settings);
+            renderContent();
+            toast(state.settings.hideCharStickies ? "\u5df2\u9690\u85cf TA \u7684\u4fbf\u7b7e" : "\u5df2\u663e\u793a TA \u7684\u4fbf\u7b7e");
+          } }, [state.settings.hideCharStickies ? "\u663e\u793a\u4fbf\u7b7e" : "\u9690\u85cf\u4fbf\u7b7e"]),
           el("button", { class: "dms-tool-btn", onclick: function () { onCharAnnotate(); } }, ["\u8ba9TA\u6279\u6ce8"])
         ])
       ]));
@@ -1526,11 +2003,17 @@
         userTextEl.style.display = "none";
       }
       userBody.appendChild(userTextEl);
+      // 允许 user 在自己的日记上选文字（供 char 批注使用，或 user 自己标记）
+      setupTextSelection(userTextEl, userPage);
 
       // char 给 user 的便签（type=sticky）作为实物便签 DOM 渲染到 user 页
-      (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; }).forEach(function (a) {
-        userBody.appendChild(makeStickyNote(a, userPage));
-      });
+      // 受 hideCharStickies 开关控制：开启时只隐藏不渲染，但数据保留用于注入记忆
+      var charStickies = (diary.charAnnotations || []).filter(function (a) { return a.type === "sticky"; });
+      if (!state.settings.hideCharStickies) {
+        charStickies.forEach(function (a) {
+          userBody.appendChild(makeStickyNote(a, userPage));
+        });
+      }
       // char 给 user 贴的表情包（如果有）
       (diary.charStickers || []).forEach(function (s) {
         userBody.appendChild(makeSticker(s, userPage));
@@ -1618,7 +2101,7 @@
         if (!state.currentDiary) return;
         roche.ui.confirm({ title: "\u5220\u9664\u65e5\u8bb0", message: "\u5220\u9664\u8fd9\u7bc7\u65e5\u8bb0\u53ca\u6240\u6709\u6279\u6ce8\uff1f" }).then(function (ok) {
           if (!ok) return;
-          deleteDiary(roche, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; state.currentDiary = null; state.subView = null; renderContent(); });
+          deleteDiaryByMode(roche, state.currentDiary.mode || state.diaryMode, state.diaryKey).then(function () { toast("\u5df2\u5220\u9664"); state.view = "cover"; state.currentDiary = null; state.subView = null; renderContent(); });
         });
       } }, ["\u5220\u9664\u65e5\u8bb0"]));
 
@@ -1751,28 +2234,18 @@
 
     /* ---------- 文字选择 → 批注菜单 ---------- */
     function setupTextSelection(textEl, pageEl) {
-      textEl.addEventListener("mouseup", function () {
-        setTimeout(function () {
-          var sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
-          var selectedText = sel.toString().trim();
-          if (selectedText.length < 1) { hideAnnotMenu(); return; }
-          var range = sel.getRangeAt(0);
-          if (!textEl.contains(range.commonAncestorContainer)) { hideAnnotMenu(); return; }
-          showAnnotMenu(selectedText, range, pageEl);
-        }, 10);
-      });
-      textEl.addEventListener("touchend", function () {
-        setTimeout(function () {
-          var sel = window.getSelection();
-          if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
-          var selectedText = sel.toString().trim();
-          if (selectedText.length < 1) { hideAnnotMenu(); return; }
-          var range = sel.getRangeAt(0);
-          if (!textEl.contains(range.commonAncestorContainer)) { hideAnnotMenu(); return; }
-          showAnnotMenu(selectedText, range, pageEl);
-        }, 200);
-      });
+      function checkSelection() {
+        var sel = window.getSelection();
+        if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
+        var selectedText = sel.toString().trim();
+        if (selectedText.length < 1) { hideAnnotMenu(); return; }
+        var range = sel.getRangeAt(0);
+        if (!textEl.contains(range.commonAncestorContainer)) { hideAnnotMenu(); return; }
+        showAnnotMenu(selectedText, range, pageEl);
+      }
+      textEl.addEventListener("mouseup", function () { setTimeout(checkSelection, 10); });
+      textEl.addEventListener("touchend", function () { setTimeout(checkSelection, 200); });
+      textEl.addEventListener("pointerup", function () { setTimeout(checkSelection, 10); });
     }
 
     function showAnnotMenu(selectedText, range, pageEl) {
@@ -1906,7 +2379,6 @@
       if (!annot.byChar) {
         removeBtn = el("button", { class: "dms-sticky-remove", onclick: function (ev) {
           ev.stopPropagation();
-          // 先在 annotations 里找，再到 charAnnotations 里找
           var arr = state.currentDiary.annotations;
           var i = arr.indexOf(annot);
           if (i >= 0) { arr.splice(i, 1); }
@@ -1919,23 +2391,6 @@
         } }, ["\u00d7"]);
       }
 
-      // 长按（或右键）显示样式选择器
-      var styleTimer = null;
-      sticky.addEventListener("contextmenu", function (e) {
-        e.preventDefault();
-        showStickyStylePicker(annot, sticky);
-      });
-      // 移动端长按
-      sticky.addEventListener("touchstart", function (e) {
-        if (e.target === text || e.target === removeBtn) return;
-        styleTimer = setTimeout(function () {
-          showStickyStylePicker(annot, sticky);
-        }, 600);
-      });
-      sticky.addEventListener("touchmove", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
-      sticky.addEventListener("touchend", function () { if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; } });
-
-      var dragging = false, offsetX = 0, offsetY = 0, startX = 0, startY = 0, moved = false;
       // 计算便签中心 y 吸附到哪个段落，写入 blockId
       function updateBlockIdByPosition() {
         var body = pageEl.querySelector(".dms-page-body");
@@ -1953,81 +2408,224 @@
             if (d < bestDist) { bestDist = d; best = b; }
           }
         });
-        if (best) {
-          annot.blockId = best.getAttribute("data-block-id") || null;
-        }
+        if (best) annot.blockId = best.getAttribute("data-block-id") || null;
       }
-      sticky.addEventListener("pointerdown", function (e) {
-        if (e.target === text || e.target === removeBtn) return;
-        if (e.pointerType === "touch") return; // 触摸走 touch 事件
-        dragging = true; moved = false;
-        startX = e.clientX; startY = e.clientY;
-        offsetX = e.clientX - sticky.offsetLeft;
-        offsetY = e.clientY - sticky.offsetTop;
-        try { sticky.setPointerCapture(e.pointerId); } catch (_) {}
-      });
-      sticky.addEventListener("pointermove", function (e) {
-        if (!dragging) return;
-        if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
+      // 边界 clamp，保证便签不会被拖出 page-body
+      function clampPos(nx, ny) {
         var body = pageEl.querySelector(".dms-page-body");
-        if (!body) return;
+        if (!body) return { x: nx, y: ny };
         var rect = body.getBoundingClientRect();
-        var nx = e.clientX - offsetX;
-        var ny = e.clientY - offsetY;
-        annot.x = Math.max(0, Math.min(nx, rect.width - 80));
-        annot.y = Math.max(0, Math.min(ny, rect.height - 40));
-        sticky.style.left = annot.x + "px";
-        sticky.style.top = annot.y + "px";
-      });
-      sticky.addEventListener("pointerup", function () {
-        if (dragging) {
-          dragging = false;
-          if (moved) { updateBlockIdByPosition(); saveCurrentDiary(); }
-        }
-      });
-      sticky.addEventListener("pointercancel", function () { dragging = false; });
+        return {
+          x: Math.max(0, Math.min(nx, rect.width - sticky.offsetWidth)),
+          y: Math.max(0, Math.min(ny, rect.height - sticky.offsetHeight))
+        };
+      }
 
-      // 触摸事件（移动端专用，更流畅）
-      var touchDragging = false, touchOffsetX = 0, touchOffsetY = 0;
+      // 长按弹出操作菜单：拖拽 / 换样式 / 删除
+      function showStickyActionMenu(clientX, clientY) {
+        var old = qs(".dms-sticky-action-menu", document);
+        if (old) old.remove();
+        var menu = el("div", {
+          class: "dms-sticky-action-menu dms-float",
+          style: { position: "fixed", left: clientX + "px", top: clientY + "px", zIndex: "700", transform: "translate(-50%, -100%)", marginTop: "-8px" }
+        });
+        menu.appendChild(el("div", { class: "dms-sticky-action-title" }, ["\u4fbf\u7b7e\u64cd\u4f5c"]));
+        var btns = el("div", { class: "dms-sticky-action-btns" });
+        if (!annot.byChar) {
+          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+            menu.remove();
+            startDragMode();
+          } }, ["\u62d6\u52a8"]));
+          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+            menu.remove();
+            showStickyStylePicker(annot, sticky);
+          } }, ["\u6362\u6837\u5f0f"]));
+          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", style: { color: "var(--red)" }, onclick: function () {
+            menu.remove();
+            var arr = state.currentDiary.annotations;
+            var i = arr.indexOf(annot);
+            if (i >= 0) arr.splice(i, 1);
+            else if (state.currentDiary.charAnnotations) {
+              var j = state.currentDiary.charAnnotations.indexOf(annot);
+              if (j >= 0) state.currentDiary.charAnnotations.splice(j, 1);
+            }
+            saveCurrentDiary();
+            sticky.remove();
+            toast("\u5df2\u5220\u9664");
+          } }, ["\u5220\u9664"]));
+        } else {
+          // char 写的便签：只能拖动 / 换样式（不可编辑删除）
+          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+            menu.remove();
+            startDragMode();
+          } }, ["\u62d6\u52a8"]));
+          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+            menu.remove();
+            showStickyStylePicker(annot, sticky);
+          } }, ["\u6362\u6837\u5f0f"]));
+        }
+        menu.appendChild(btns);
+        document.body.appendChild(menu);
+        // 点击外部关闭
+        setTimeout(function () {
+          function close(e) {
+            if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("mousedown", close); document.removeEventListener("touchstart", close); }
+          }
+          document.addEventListener("mousedown", close);
+          document.addEventListener("touchstart", close, { passive: true });
+        }, 0);
+      }
+
+      // 拖拽模式：统一用 getBoundingClientRect 计算起点 + 位移增量，避免 offsetLeft/滚动偏移导致跳跃
+      function startDragMode() {
+        toast("\u62d6\u52a8\u6a21\u5f0f\uff1a\u6309\u4f4f\u5e76\u79fb\u52a8\uff0c\u677e\u624b\u7ed3\u675f");
+        sticky.classList.add("dragging");
+        text.contentEditable = "false";
+        var dragging = false;
+        var startBodyX = 0, startBodyY = 0, startClientX = 0, startClientY = 0;
+
+        function getBodyRect() {
+          var body = pageEl.querySelector(".dms-page-body");
+          return body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+        }
+        function beginDrag(clientX, clientY) {
+          dragging = true;
+          var br = getBodyRect();
+          var sr = sticky.getBoundingClientRect();
+          startBodyX = sr.left - br.left;
+          startBodyY = sr.top - br.top;
+          startClientX = clientX;
+          startClientY = clientY;
+        }
+        function moveDrag(clientX, clientY) {
+          if (!dragging) return;
+          var dx = clientX - startClientX;
+          var dy = clientY - startClientY;
+          var p = clampPos(startBodyX + dx, startBodyY + dy);
+          annot.x = p.x; annot.y = p.y;
+          sticky.style.left = p.x + "px";
+          sticky.style.top = p.y + "px";
+        }
+        function finishDrag() {
+          if (dragging) {
+            dragging = false;
+            updateBlockIdByPosition();
+            saveCurrentDiary();
+            endDragMode();
+          }
+        }
+
+        function onPointerDown(e) {
+          if (e.target === text || e.target === removeBtn) return;
+          beginDrag(e.clientX, e.clientY);
+          e.preventDefault();
+        }
+        function onPointerMove(e) { moveDrag(e.clientX, e.clientY); }
+        function onPointerUp() { finishDrag(); }
+
+        function onTouchStart(e) {
+          if (e.target === text || e.target === removeBtn) return;
+          if (e.touches.length !== 1) return;
+          var t = e.touches[0];
+          beginDrag(t.clientX, t.clientY);
+          e.preventDefault();
+        }
+        function onTouchMove(e) {
+          if (e.touches.length !== 1) return;
+          var t = e.touches[0];
+          e.preventDefault();
+          moveDrag(t.clientX, t.clientY);
+        }
+        function onTouchEnd() { finishDrag(); }
+
+        sticky.addEventListener("pointerdown", onPointerDown);
+        sticky.addEventListener("pointermove", onPointerMove);
+        sticky.addEventListener("pointerup", onPointerUp);
+        sticky.addEventListener("pointercancel", onPointerUp);
+        sticky.addEventListener("touchstart", onTouchStart, { passive: false });
+        sticky.addEventListener("touchmove", onTouchMove, { passive: false });
+        sticky.addEventListener("touchend", onTouchEnd);
+        sticky.addEventListener("touchcancel", onTouchEnd);
+        sticky._dragHandlers = { onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp,
+          onTouchStart: onTouchStart, onTouchMove: onTouchMove, onTouchEnd: onTouchEnd };
+        sticky._isDragMode = true;
+        function endDragMode() {
+          if (!sticky._isDragMode) return;
+          sticky._isDragMode = false;
+          sticky.classList.remove("dragging");
+          text.contentEditable = annot.byChar ? "false" : "true";
+          var h = sticky._dragHandlers;
+          if (h) {
+            sticky.removeEventListener("pointerdown", h.onPointerDown);
+            sticky.removeEventListener("pointermove", h.onPointerMove);
+            sticky.removeEventListener("pointerup", h.onPointerUp);
+            sticky.removeEventListener("pointercancel", h.onPointerUp);
+            sticky.removeEventListener("touchstart", h.onTouchStart);
+            sticky.removeEventListener("touchmove", h.onTouchMove);
+            sticky.removeEventListener("touchend", h.onTouchEnd);
+            sticky.removeEventListener("touchcancel", h.onTouchEnd);
+          }
+          sticky._dragHandlers = null;
+        }
+        sticky._endDragMode = endDragMode;
+      }
+
+      // 右键 / 长按触发操作菜单
+      sticky.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+        showStickyActionMenu(e.clientX, e.clientY);
+      });
+      var longPressTimer = null;
+      var longPressStart = null;
       sticky.addEventListener("touchstart", function (e) {
         if (e.target === text || e.target === removeBtn) return;
         if (e.touches.length !== 1) return;
+        if (sticky._isDragMode) return; // 拖拽模式中不触发菜单
         var t = e.touches[0];
-        var stickyRect = sticky.getBoundingClientRect();
-        var body = pageEl.querySelector(".dms-page-body");
-        var bodyRect = body ? body.getBoundingClientRect() : { left: 0, top: 0 };
-        touchDragging = true; moved = false;
-        startX = t.clientX; startY = t.clientY;
-        touchOffsetX = t.clientX - bodyRect.left - annot.x;
-        touchOffsetY = t.clientY - bodyRect.top - annot.y;
-        // 不阻止默认，让长按检测继续工作（styleTimer 在 touchstart 已启动）
+        longPressStart = { x: t.clientX, y: t.clientY };
+        longPressTimer = setTimeout(function () {
+          if (navigator.vibrate) navigator.vibrate(30);
+          showStickyActionMenu(t.clientX, t.clientY);
+          longPressTimer = null;
+        }, 500);
       }, { passive: true });
       sticky.addEventListener("touchmove", function (e) {
-        if (!touchDragging || e.touches.length !== 1) return;
+        if (!longPressTimer || !longPressStart) return;
         var t = e.touches[0];
-        if (Math.abs(t.clientX - startX) > 3 || Math.abs(t.clientY - startY) > 3) {
-          moved = true;
-          if (styleTimer) { clearTimeout(styleTimer); styleTimer = null; }
-          e.preventDefault(); // 阻止滚动
+        if (Math.abs(t.clientX - longPressStart.x) > 8 || Math.abs(t.clientY - longPressStart.y) > 8) {
+          clearTimeout(longPressTimer);
+          longPressTimer = null;
         }
-        var body = pageEl.querySelector(".dms-page-body");
-        if (!body) return;
-        var rect = body.getBoundingClientRect();
-        // touchOffsetX/Y 已含 bodyRect 偏移，所以直接用 t.clientX - touchOffsetX
-        var nx = t.clientX - touchOffsetX;
-        var ny = t.clientY - touchOffsetY;
-        annot.x = Math.max(0, Math.min(nx, rect.width - 80));
-        annot.y = Math.max(0, Math.min(ny, rect.height - 40));
-        sticky.style.left = annot.x + "px";
-        sticky.style.top = annot.y + "px";
-      }, { passive: false });
+      }, { passive: true });
       sticky.addEventListener("touchend", function () {
-        if (touchDragging) {
-          touchDragging = false;
-          if (moved) { updateBlockIdByPosition(); saveCurrentDiary(); }
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      });
+      sticky.addEventListener("touchcancel", function () {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      });
+
+      // 鼠标长按（桌面端）：按住 500ms 也弹菜单
+      var mouseDownTimer = null;
+      sticky.addEventListener("mousedown", function (e) {
+        if (e.target === text || e.target === removeBtn) return;
+        if (e.button !== 0) return;
+        if (sticky._isDragMode) return;
+        mouseDownTimer = setTimeout(function () {
+          showStickyActionMenu(e.clientX, e.clientY);
+          mouseDownTimer = null;
+        }, 500);
+      });
+      sticky.addEventListener("mousemove", function (e) {
+        if (!mouseDownTimer) return;
+        // 鼠标移动距离过大取消
+        if (Math.abs(e.movementX) > 2 || Math.abs(e.movementY) > 2) {
+          clearTimeout(mouseDownTimer);
+          mouseDownTimer = null;
         }
       });
-      sticky.addEventListener("touchcancel", function () { touchDragging = false; });
+      sticky.addEventListener("mouseup", function () {
+        if (mouseDownTimer) { clearTimeout(mouseDownTimer); mouseDownTimer = null; }
+      });
 
       // char 写的便签加标记
       if (annot.byChar) {
@@ -2081,11 +2679,11 @@
       });
       popup.appendChild(styleGrid);
 
-      // user 自定义 CSS 样式
+      // user 自定义 CSS 样式（在设置面板中管理，这里仅选择）
       popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "10px 2px 2px" } }, ["\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
       getCustomNoteStyles(roche).then(function (customList) {
         if (!customList.length) {
-          popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", padding: "4px 2px" } }, ["\u8fd8\u6ca1\u6709\u81ea\u5b9a\u4e49\u6837\u5f0f\uff0c\u70b9\u4e0b\u65b9\u201c+ \u65b0\u5efa\u201d\u6dfb\u52a0\u3002"]));
+          popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", padding: "4px 2px" } }, ["\u6682\u65e0\u81ea\u5b9a\u4e49\u6837\u5f0f\uff0c\u8bf7\u5728\u8bbe\u7f6e\u9762\u677f\u4e2d\u5bfc\u5165\u3002"]));
         } else {
           var customGrid = el("div", { class: "dms-sticky-style-picker" });
           customList.forEach(function (cs) {
@@ -2108,47 +2706,7 @@
           });
           popup.appendChild(customGrid);
         }
-
-        // 新建自定义样式按钮
-        popup.appendChild(el("button", {
-          class: "dms-btn dms-btn-sm dms-btn-ghost",
-          style: { marginTop: "6px", width: "100%" },
-          onclick: function () {
-            openCustomNoteEditor(null, function () {
-              popup.remove();
-              showStickyStylePicker(annot, stickyEl);
-            });
-          }
-        }, ["+ \u65b0\u5efa\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
       });
-
-      // 字体 URL 导入（应用到当前便签）
-      popup.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-dim)", margin: "10px 2px 2px" } }, ["\u5b57\u4f53 URL\uff08\u53ef\u9009\uff0c\u4ec5\u5f53\u524d\u4fbf\u7b7e\uff09"]));
-      var fontInput = el("input", {
-        type: "text", placeholder: "https://fonts.googleapis.com/... \u6216 .woff/.ttf \u76f4\u94fe",
-        value: annot.customFontUrl || "",
-        style: { width: "100%", padding: "4px 8px", fontSize: "11px", marginTop: "2px", border: "1px solid var(--line)", borderRadius: "4px" },
-        oninput: function () { annot.customFontUrl = this.value; }
-      });
-      popup.appendChild(fontInput);
-      popup.appendChild(el("button", {
-        class: "dms-btn dms-btn-sm dms-btn-primary",
-        style: { marginTop: "4px", width: "100%" },
-        onclick: function () {
-          if (annot.customFontUrl) {
-            var fontName = "customFont" + Date.now();
-            var css = "@font-face{font-family:'" + fontName + "';src:url('" + annot.customFontUrl + "');}";
-            var styleEl = document.createElement("style");
-            styleEl.textContent = css;
-            document.head.appendChild(styleEl);
-            annot.customFont = "'" + fontName + "',cursive";
-            stickyEl.style.fontFamily = annot.customFont;
-            saveCurrentDiary();
-            toast("\u5b57\u4f53\u5df2\u52a0\u8f7d");
-          }
-          popup.remove();
-        }
-      }, ["\u52a0\u8f7d\u5b57\u4f53"]));
 
       // 定位到便签附近
       var rect = stickyEl.getBoundingClientRect();
@@ -2308,8 +2866,6 @@
       });
       sticker.appendChild(resizeHandle);
 
-      var dragging = false, offsetX = 0, offsetY = 0, startX = 0, startY = 0, moved = false;
-      var resizing = false, startW = 0, startH = 0;
       // 计算贴纸中心 y 吸附到哪个段落，写入 blockId
       function updateStickerBlockIdByPosition() {
         var body = pageEl.querySelector(".dms-page-body");
@@ -2338,93 +2894,250 @@
           y: Math.max(0, Math.min(ny, rect.height - sticker.offsetHeight))
         };
       }
-      sticker.addEventListener("pointerdown", function (e) {
-        if (e.target === delBtn) return;
-        if (e.pointerType === "touch") return; // 触摸走 touch 事件
-        if (e.target === resizeHandle) {
-          resizing = true; moved = false;
-          startW = sticker.offsetWidth;
-          startH = sticker.offsetHeight;
-          startX = e.clientX; startY = e.clientY;
-          try { sticker.setPointerCapture(e.pointerId); } catch (_) {}
-          return;
+
+      // 长按弹出操作菜单：拖拽 / 缩放 / 删除
+      function showStickerActionMenu(clientX, clientY) {
+        var old = qs(".dms-sticky-action-menu", document);
+        if (old) old.remove();
+        var menu = el("div", {
+          class: "dms-sticky-action-menu dms-float",
+          style: { position: "fixed", left: clientX + "px", top: clientY + "px", zIndex: "700", transform: "translate(-50%, -100%)", marginTop: "-8px" }
+        });
+        menu.appendChild(el("div", { class: "dms-sticky-action-title" }, ["\u8868\u60c5\u64cd\u4f5c"]));
+        var btns = el("div", { class: "dms-sticky-action-btns" });
+        btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+          menu.remove();
+          startDragMode();
+        } }, ["\u62d6\u52a8"]));
+        btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+          menu.remove();
+          startResizeMode();
+        } }, ["\u7f29\u653e"]));
+        btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", style: { color: "var(--red)" }, onclick: function () {
+          menu.remove();
+          var arr = state.currentDiary.stickers || [];
+          var i = arr.indexOf(s);
+          if (i >= 0) { arr.splice(i, 1); state.currentDiary.stickers = arr; }
+          saveCurrentDiary();
+          sticker.remove();
+          toast("\u5df2\u5220\u9664");
+        } }, ["\u5220\u9664"]));
+        menu.appendChild(btns);
+        document.body.appendChild(menu);
+        setTimeout(function () {
+          function close(e) {
+            if (!menu.contains(e.target)) { menu.remove(); document.removeEventListener("mousedown", close); document.removeEventListener("touchstart", close); }
+          }
+          document.addEventListener("mousedown", close);
+          document.addEventListener("touchstart", close, { passive: true });
+        }, 0);
+      }
+
+      // 拖拽模式
+      function startDragMode() {
+        toast("\u62d6\u52a8\u6a21\u5f0f\uff1a\u6309\u4f4f\u5e76\u79fb\u52a8\uff0c\u677e\u624b\u7ed3\u675f");
+        sticker.classList.add("dragging");
+        var dragging = false, offX = 0, offY = 0;
+        function onPointerDown(e) {
+          if (e.target === delBtn || e.target === resizeHandle) return;
+          dragging = true;
+          offX = e.clientX - sticker.offsetLeft;
+          offY = e.clientY - sticker.offsetTop;
+          e.preventDefault();
         }
-        dragging = true; moved = false;
-        startX = e.clientX; startY = e.clientY;
-        offsetX = e.clientX - sticker.offsetLeft;
-        offsetY = e.clientY - sticker.offsetTop;
-        try { sticker.setPointerCapture(e.pointerId); } catch (_) {}
-        sticker.style.cursor = "grabbing";
-      });
-      sticker.addEventListener("pointermove", function (e) {
-        if (resizing) {
+        function onPointerMove(e) {
+          if (!dragging) return;
+          var p = clampPos(e.clientX - offX, e.clientY - offY);
+          s.x = p.x; s.y = p.y;
+          sticker.style.left = p.x + "px";
+          sticker.style.top = p.y + "px";
+        }
+        function onPointerUp() {
+          if (dragging) {
+            dragging = false;
+            updateStickerBlockIdByPosition();
+            saveCurrentDiary();
+            endDragMode();
+          }
+        }
+        var tDragging = false, tOffX = 0, tOffY = 0;
+        function onTouchStart(e) {
+          if (e.target === delBtn || e.target === resizeHandle) return;
+          if (e.touches.length !== 1) return;
+          var t = e.touches[0];
+          var body = pageEl.querySelector(".dms-page-body");
+          var br = body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+          tDragging = true;
+          tOffX = t.clientX - br.left - s.x;
+          tOffY = t.clientY - br.top - s.y;
+          e.preventDefault();
+        }
+        function onTouchMove(e) {
+          if (!tDragging || e.touches.length !== 1) return;
+          var t = e.touches[0];
+          e.preventDefault();
+          var p = clampPos(t.clientX - tOffX, t.clientY - tOffY);
+          s.x = p.x; s.y = p.y;
+          sticker.style.left = p.x + "px";
+          sticker.style.top = p.y + "px";
+        }
+        function onTouchEnd() {
+          if (tDragging) {
+            tDragging = false;
+            updateStickerBlockIdByPosition();
+            saveCurrentDiary();
+            endDragMode();
+          }
+        }
+        sticker.addEventListener("pointerdown", onPointerDown);
+        sticker.addEventListener("pointermove", onPointerMove);
+        sticker.addEventListener("pointerup", onPointerUp);
+        sticker.addEventListener("pointercancel", onPointerUp);
+        sticker.addEventListener("touchstart", onTouchStart, { passive: false });
+        sticker.addEventListener("touchmove", onTouchMove, { passive: false });
+        sticker.addEventListener("touchend", onTouchEnd);
+        sticker.addEventListener("touchcancel", onTouchEnd);
+        sticker._dragHandlers = { onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp,
+          onTouchStart: onTouchStart, onTouchMove: onTouchMove, onTouchEnd: onTouchEnd };
+        sticker._isDragMode = true;
+        function endDragMode() {
+          if (!sticker._isDragMode) return;
+          sticker._isDragMode = false;
+          sticker.classList.remove("dragging");
+          var h = sticker._dragHandlers;
+          if (h) {
+            sticker.removeEventListener("pointerdown", h.onPointerDown);
+            sticker.removeEventListener("pointermove", h.onPointerMove);
+            sticker.removeEventListener("pointerup", h.onPointerUp);
+            sticker.removeEventListener("pointercancel", h.onPointerUp);
+            sticker.removeEventListener("touchstart", h.onTouchStart);
+            sticker.removeEventListener("touchmove", h.onTouchMove);
+            sticker.removeEventListener("touchend", h.onTouchEnd);
+            sticker.removeEventListener("touchcancel", h.onTouchEnd);
+          }
+          sticker._dragHandlers = null;
+        }
+      }
+      // 缩放模式
+      function startResizeMode() {
+        toast("\u7f29\u653e\u6a21\u5f0f\uff1a\u6309\u4f4f\u5e76\u62d6\u52a8\uff0c\u677e\u624b\u7ed3\u675f");
+        sticker.style.boxShadow = "0 0 0 2px var(--blue), 0 4px 12px rgba(74,60,40,0.3)";
+        sticker.style.zIndex = "20";
+        var resizing = false, startW = 0, startH = 0, startX = 0, startY = 0;
+        function onPointerDown(e) {
+          if (e.target === delBtn) return;
+          resizing = true;
+          startW = sticker.offsetWidth; startH = sticker.offsetHeight;
+          startX = e.clientX; startY = e.clientY;
+          e.preventDefault();
+        }
+        function onPointerMove(e) {
+          if (!resizing) return;
           var newW = Math.max(32, startW + (e.clientX - startX));
           var newH = Math.max(32, startH + (e.clientY - startY));
           sticker.style.width = newW + "px";
           sticker.style.height = newH + "px";
           s.size = newW;
-        } else if (dragging) {
-          if (Math.abs(e.clientX - startX) > 3 || Math.abs(e.clientY - startY) > 3) moved = true;
-          var p = clampPos(e.clientX - offsetX, e.clientY - offsetY);
-          s.x = p.x; s.y = p.y;
-          sticker.style.left = s.x + "px";
-          sticker.style.top = s.y + "px";
         }
-      });
-      sticker.addEventListener("pointerup", function () {
-        if (dragging) {
-          dragging = false; sticker.style.cursor = "grab";
-          if (moved) { updateStickerBlockIdByPosition(); saveCurrentDiary(); }
+        function onPointerUp() {
+          if (resizing) { resizing = false; saveCurrentDiary(); endResizeMode(); }
         }
-        if (resizing) { resizing = false; saveCurrentDiary(); }
-      });
-      sticker.addEventListener("pointercancel", function () { dragging = false; resizing = false; });
-
-      // 触摸事件（移动端）
-      var tDragging = false, tResizing = false, tOffX = 0, tOffY = 0;
-      sticker.addEventListener("touchstart", function (e) {
-        if (e.target === delBtn) return;
-        if (e.touches.length !== 1) return;
-        var t = e.touches[0];
-        var body = pageEl.querySelector(".dms-page-body");
-        var br = body ? body.getBoundingClientRect() : { left: 0, top: 0 };
-        if (e.target === resizeHandle) {
-          tResizing = true; moved = false;
+        var tResizing = false;
+        function onTouchStart(e) {
+          if (e.touches.length !== 1) return;
+          var t = e.touches[0];
+          tResizing = true;
           startW = sticker.offsetWidth; startH = sticker.offsetHeight;
           startX = t.clientX; startY = t.clientY;
-        } else {
-          tDragging = true; moved = false;
-          startX = t.clientX; startY = t.clientY;
-          tOffX = t.clientX - br.left - s.x;
-          tOffY = t.clientY - br.top - s.y;
-        }
-      }, { passive: true });
-      sticker.addEventListener("touchmove", function (e) {
-        if (e.touches.length !== 1) return;
-        var t = e.touches[0];
-        if (Math.abs(t.clientX - startX) > 3 || Math.abs(t.clientY - startY) > 3) {
-          moved = true;
           e.preventDefault();
         }
-        if (tResizing) {
+        function onTouchMove(e) {
+          if (!tResizing || e.touches.length !== 1) return;
+          var t = e.touches[0];
+          e.preventDefault();
           var newW = Math.max(32, startW + (t.clientX - startX));
           var newH = Math.max(32, startH + (t.clientY - startY));
           sticker.style.width = newW + "px";
           sticker.style.height = newH + "px";
           s.size = newW;
-        } else if (tDragging) {
-          var p = clampPos(t.clientX - tOffX, t.clientY - tOffY);
-          s.x = p.x; s.y = p.y;
-          sticker.style.left = s.x + "px";
-          sticker.style.top = s.y + "px";
         }
-      }, { passive: false });
-      sticker.addEventListener("touchend", function () {
-        if (tDragging && moved) { updateStickerBlockIdByPosition(); saveCurrentDiary(); }
-        if (tResizing) saveCurrentDiary();
-        tDragging = false; tResizing = false;
+        function onTouchEnd() {
+          if (tResizing) { tResizing = false; saveCurrentDiary(); endResizeMode(); }
+        }
+        sticker.addEventListener("pointerdown", onPointerDown);
+        sticker.addEventListener("pointermove", onPointerMove);
+        sticker.addEventListener("pointerup", onPointerUp);
+        sticker.addEventListener("pointercancel", onPointerUp);
+        sticker.addEventListener("touchstart", onTouchStart, { passive: false });
+        sticker.addEventListener("touchmove", onTouchMove, { passive: false });
+        sticker.addEventListener("touchend", onTouchEnd);
+        sticker.addEventListener("touchcancel", onTouchEnd);
+        sticker._resizeHandlers = { onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp,
+          onTouchStart: onTouchStart, onTouchMove: onTouchMove, onTouchEnd: onTouchEnd };
+        sticker._isResizeMode = true;
+        function endResizeMode() {
+          if (!sticker._isResizeMode) return;
+          sticker._isResizeMode = false;
+          sticker.style.boxShadow = "";
+          sticker.style.zIndex = "";
+          var h = sticker._resizeHandlers;
+          if (h) {
+            sticker.removeEventListener("pointerdown", h.onPointerDown);
+            sticker.removeEventListener("pointermove", h.onPointerMove);
+            sticker.removeEventListener("pointerup", h.onPointerUp);
+            sticker.removeEventListener("pointercancel", h.onPointerUp);
+            sticker.removeEventListener("touchstart", h.onTouchStart);
+            sticker.removeEventListener("touchmove", h.onTouchMove);
+            sticker.removeEventListener("touchend", h.onTouchEnd);
+            sticker.removeEventListener("touchcancel", h.onTouchEnd);
+          }
+          sticker._resizeHandlers = null;
+        }
+      }
+
+      // 右键 / 长按触发操作菜单
+      sticker.addEventListener("contextmenu", function (e) {
+        e.preventDefault();
+        showStickerActionMenu(e.clientX, e.clientY);
       });
-      sticker.addEventListener("touchcancel", function () { tDragging = false; tResizing = false; });
+      var lpTimer = null, lpStart = null;
+      sticker.addEventListener("touchstart", function (e) {
+        if (e.target === delBtn || e.target === resizeHandle) return;
+        if (e.touches.length !== 1) return;
+        if (sticker._isDragMode || sticker._isResizeMode) return;
+        var t = e.touches[0];
+        lpStart = { x: t.clientX, y: t.clientY };
+        lpTimer = setTimeout(function () {
+          if (navigator.vibrate) navigator.vibrate(30);
+          showStickerActionMenu(t.clientX, t.clientY);
+          lpTimer = null;
+        }, 500);
+      }, { passive: true });
+      sticker.addEventListener("touchmove", function (e) {
+        if (!lpTimer || !lpStart) return;
+        var t = e.touches[0];
+        if (Math.abs(t.clientX - lpStart.x) > 8 || Math.abs(t.clientY - lpStart.y) > 8) {
+          clearTimeout(lpTimer); lpTimer = null;
+        }
+      }, { passive: true });
+      sticker.addEventListener("touchend", function () { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } });
+      sticker.addEventListener("touchcancel", function () { if (lpTimer) { clearTimeout(lpTimer); lpTimer = null; } });
+      // 桌面端鼠标长按
+      var mDownTimer = null;
+      sticker.addEventListener("mousedown", function (e) {
+        if (e.target === delBtn || e.target === resizeHandle) return;
+        if (e.button !== 0) return;
+        if (sticker._isDragMode || sticker._isResizeMode) return;
+        mDownTimer = setTimeout(function () {
+          showStickerActionMenu(e.clientX, e.clientY);
+          mDownTimer = null;
+        }, 500);
+      });
+      sticker.addEventListener("mousemove", function (e) {
+        if (!mDownTimer) return;
+        if (Math.abs(e.movementX) > 2 || Math.abs(e.movementY) > 2) { clearTimeout(mDownTimer); mDownTimer = null; }
+      });
+      sticker.addEventListener("mouseup", function () { if (mDownTimer) { clearTimeout(mDownTimer); mDownTimer = null; } });
       return sticker;
     }
 
@@ -2915,6 +3628,13 @@
         onclick: function () { openCustomNoteEditor(null, function () { renderCustomStyleList(); }); }
       }, ["+ \u65b0\u5efa\u81ea\u5b9a\u4e49\u6837\u5f0f"]));
 
+      // 隐藏 TA 给 user 的便签开关
+      secSticky.appendChild(el("div", { style: { borderTop: "1px dashed var(--line)", marginTop: "12px", paddingTop: "10px" } }, [
+        makeSwitch("\u9690\u85cf TA \u7ed9\u6211\u5199\u7684\u4fbf\u7b7e", "\u906e\u6321\u65f6\u5f00\u542f\uff0c\u4fbf\u7b7e\u4ecd\u4f1a\u6ce8\u5165\u8bb0\u5fc6\uff0c\u53ea\u662f\u4e0d\u663e\u793a", state.settings.hideCharStickies, function (v) {
+          state.settings.hideCharStickies = v; saveSettings(roche, state.settings); renderContent();
+        })
+      ]));
+
       body.appendChild(secSticky);
 
       // 表情包库
@@ -3172,32 +3892,591 @@
       return box;
     }
 
+    /* ---------- 周期整理对话框 ---------- */
+    function buildPeriodDialogView() {
+      var wrap = el("div", { class: "dms-wrap dms-fade-in" });
+      var card = el("div", { class: "dms-card" }, [
+        el("h2", {}, [el("span", { class: "dms-badge" }, ["\u2605"]), " \u6309\u5468\u671f\u6574\u7406"]),
+        el("div", { class: "dms-card-sub" }, ["\u9009\u62e9\u5468\u671f\u7c7b\u578b\u4e0e\u6574\u7406\u7d20\u6750\uff0c\u751f\u6210\u603b\u7ed3\u65e5\u8bb0\u3002"])
+      ]);
+
+      // 基准日期（默认当前选中日期）
+      var dateInput = el("input", { type: "date", class: "dms-input" });
+      dateInput.value = toDateInput(state.selectedDate);
+      dateInput.max = toDateInput(new Date());
+      dateInput.addEventListener("change", function () {
+        if (this.value) state.selectedDate = parseDateInput(this.value);
+      });
+      card.appendChild(el("div", { style: { marginBottom: "10px" } }, [
+        el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", marginBottom: "4px" } }, ["\u57fa\u51c6\u65e5\u671f\uff08\u51b3\u5b9a\u5468\u671f\u8303\u56f4\uff09"]),
+        dateInput
+      ]));
+
+      // 周期类型选择
+      var periodType = "week";
+      var typeGroup = el("div", { style: { display: "flex", gap: "6px", marginBottom: "10px" } });
+      [["week", "\u6309\u5468"], ["halfmonth", "\u6309\u534a\u6708"], ["month", "\u6309\u6708"]].forEach(function (opt) {
+        var btn = el("button", {
+          class: "dms-btn dms-btn-sm" + (periodType === opt[0] ? " dms-btn-primary" : " dms-btn-ghost"),
+          onclick: function () {
+            periodType = opt[0];
+            typeGroup.querySelectorAll("button").forEach(function (b) {
+              b.classList.remove("dms-btn-primary");
+              b.classList.add("dms-btn-ghost");
+            });
+            btn.classList.remove("dms-btn-ghost");
+            btn.classList.add("dms-btn-primary");
+            updateRangeHint();
+          }
+        }, [opt[1]]);
+        typeGroup.appendChild(btn);
+      });
+      card.appendChild(typeGroup);
+
+      // 范围提示
+      var rangeHint = el("div", { style: { fontSize: "12px", color: "var(--blue)", marginBottom: "10px" } });
+      function updateRangeHint() {
+        var r = getPeriodRange(periodType, state.selectedDate);
+        rangeHint.textContent = "\u8303\u56f4\uff1a" + r[0] + " \u81f3 " + r[1];
+      }
+      updateRangeHint();
+      card.appendChild(rangeHint);
+
+      // 数据源选择
+      var sourceType = "chat";
+      var srcGroup = el("div", { style: { display: "flex", gap: "6px", marginBottom: "12px" } });
+      [["chat", "\u804a\u5929\u8bb0\u5f55"], ["daily", "\u5df2\u751f\u6210\u7684\u6309\u65e5\u65e5\u8bb0"]].forEach(function (opt) {
+        var btn = el("button", {
+          class: "dms-btn dms-btn-sm" + (sourceType === opt[0] ? " dms-btn-primary" : " dms-btn-ghost"),
+          onclick: function () {
+            sourceType = opt[0];
+            srcGroup.querySelectorAll("button").forEach(function (b) {
+              b.classList.remove("dms-btn-primary");
+              b.classList.add("dms-btn-ghost");
+            });
+            btn.classList.remove("dms-btn-ghost");
+            btn.classList.add("dms-btn-primary");
+          }
+        }, [opt[1]]);
+        srcGroup.appendChild(btn);
+      });
+      card.appendChild(srcGroup);
+
+      // ===== 按日日记列表：可查看、勾选、删除 =====
+      var dailyDiaryList = el("div", { class: "dms-card", style: { marginTop: "6px", padding: "10px", border: "1px solid var(--line)", borderRadius: "var(--radius)" } });
+      dailyDiaryList.appendChild(el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", marginBottom: "6px" } }, ["\u5df2\u5b58\u7684\u6309\u65e5\u65e5\u8bb0\uff1a"]));
+      var dailyBody = el("div", { style: { maxHeight: "250px", overflowY: "auto" } });
+      dailyDiaryList.appendChild(dailyBody);
+      function loadDailyDiaryList() {
+        dailyBody.innerHTML = "";
+        getDiariesByMode(roche, "solo").then(function (all) {
+          var cid = state.selectedConv ? (state.selectedConv.conversationId || state.selectedConv.id) : "";
+          var keys = Object.keys(all).filter(function (k) { return k.split(":")[0] === cid; })
+            .sort(function (a, b) { return b > a ? 1 : -1; });
+          if (!keys.length) {
+            dailyBody.appendChild(el("div", { class: "dms-empty", style: { fontSize: "11px" } }, ["\u6682\u65e0\u6309\u65e5\u65e5\u8bb0\u3002"]));
+            return;
+          }
+          var countEl = el("span", { style: { fontSize: "11px", color: "var(--blue)" } }, [String(keys.length) + " \u7bc7"]);
+          dailyDiaryList.querySelector(".dms-card-sub") && dailyDiaryList.removeChild(dailyDiaryList.querySelector(".dms-card-sub"));
+          var sub = el("div", { class: "dms-card-sub", style: { marginBottom: "4px" } });
+          sub.appendChild(countEl);
+          dailyDiaryList.insertBefore(sub, dailyBody);
+          keys.forEach(function (k) {
+            var it = all[k];
+            var dk = it.dateKey || "";
+            var item = el("div", {
+              class: "dms-hist",
+              style: { cursor: "pointer", display: "flex", alignItems: "center", gap: "6px", padding: "4px", margin: "2px 0" },
+              onclick: function (e) {
+                if (e.target.tagName === "BUTTON" || e.target.tagName === "INPUT") return;
+                showFullTextPopup(dk, it.charDiary || "");
+              }
+            });
+            item.appendChild(el("span", { style: { flex: "1", fontSize: "11px" } }, [dk + " " + (it.charDiary || "").slice(0, 30) + "\u2026"]));
+            // 删除按钮
+            item.appendChild(el("button", {
+              class: "dms-btn dms-btn-sm",
+              style: { fontSize: "10px", padding: "0 4px", color: "var(--red)" },
+              onclick: function (ev) {
+                ev.stopPropagation();
+                deleteDiaryByMode(roche, "solo", k).then(function () {
+                  toast("\u5df2\u5220\u9664 " + dk);
+                  loadDailyDiaryList();
+                });
+              }
+            }, ["\u00d7"]));
+            dailyBody.appendChild(item);
+          });
+        });
+      }
+      loadDailyDiaryList();
+      card.appendChild(dailyDiaryList);
+
+      // 生成按钮
+      var genBtn = el("button", { class: "dms-btn dms-btn-primary", style: { width: "100%" } }, ["\u751f\u6210\u603b\u7ed3"]);
+      genBtn.addEventListener("click", function () {
+        genBtn.disabled = true;
+        genBtn.textContent = "\u751f\u6210\u4e2d...";
+        state.generating = true;
+        state.generatingMsg = "\u6b63\u5728\u751f\u6210" + getPeriodLabel(periodType) + "\u603b\u7ed3";
+        renderContent();
+        generatePeriodDiary(roche, state, periodType, sourceType, state.selectedDate).then(function (result) {
+          state.generating = false;
+          state.generatingMsg = "";
+          // 进入展示视图
+          state.currentDiary = result.diaryData;
+          state.diaryKey = result.diaryKey;
+          state.view = "periodDiaryView";
+          toast("\u751f\u6210\u6210\u529f");
+          renderContent();
+        }).catch(function (e) {
+          state.generating = false;
+          state.generatingMsg = "";
+          toast("\u751f\u6210\u5931\u8d25\uff1a" + (e && e.message || e));
+          renderContent();
+        });
+      });
+      card.appendChild(genBtn);
+
+      // 返回按钮
+      card.appendChild(el("button", {
+        class: "dms-btn dms-btn-ghost",
+        style: { width: "100%", marginTop: "6px" },
+        onclick: function () { state.view = "cover"; renderContent(); }
+      }, ["\u8fd4\u56de"]));
+
+      wrap.appendChild(card);
+
+      // 历史周期日记列表
+      var histCard = el("div", { class: "dms-card", style: { marginTop: "10px" } }, [
+        el("h2", {}, ["\u5386\u53f2\u603b\u7ed3"])
+      ]);
+      getPeriodDiaries(roche).then(function (all) {
+        var cid = state.selectedConv ? (state.selectedConv.conversationId || state.selectedConv.id) : "";
+        var keys = Object.keys(all).filter(function (k) { return k.indexOf(cid + ":") === 0; })
+          .sort(function (a, b) { return (all[b].updatedAt || all[b].createdAt || 0) - (all[a].updatedAt || all[a].createdAt || 0); });
+        if (!keys.length) {
+          histCard.appendChild(el("div", { class: "dms-empty" }, ["\u6682\u65e0\u603b\u7ed3\u3002"]));
+        } else {
+          keys.forEach(function (k) {
+            var it = all[k];
+            var label = getPeriodLabel(it.period) + " " + (it.periodKey || "");
+            var item = el("div", { class: "dms-hist", onclick: function () {
+              state.currentDiary = it;
+              state.diaryKey = k;
+              state.view = "periodDiaryView";
+              renderContent();
+            } }, [
+              el("div", { class: "dms-hist-head" }, [
+                el("div", { class: "dms-hist-title" }, [label]),
+                el("div", { class: "dms-hist-date" }, [new Date(it.updatedAt || it.createdAt || 0).toLocaleString()])
+              ]),
+              el("div", { class: "dms-hist-snippet" }, [(it.charDiary || "").slice(0, 60) + "\u2026"])
+            ]);
+            histCard.appendChild(item);
+          });
+        }
+      });
+      wrap.appendChild(histCard);
+
+      return wrap;
+    }
+
+    /* ---------- 周期日记展示视图 ---------- */
+    function buildPeriodDiaryDisplayView() {
+      var wrap = el("div", { class: "dms-wrap dms-fade-in" });
+      if (!state.currentDiary) {
+        wrap.appendChild(el("div", { class: "dms-card" }, ["\u672a\u627e\u5230\u65e5\u8bb0\u3002"]));
+        return wrap;
+      }
+      var d = state.currentDiary;
+      var card = el("div", { class: "dms-card" });
+      card.appendChild(el("div", { class: "dms-page-header" }, [
+        el("div", {}, [
+          el("div", { class: "dms-page-title" }, [getPeriodLabel(d.period) + " " + (d.periodKey || "")]),
+          el("div", { class: "dms-page-meta" }, [(d.dateRange || []).join(" \u81f3 ")])
+        ]),
+        el("div", { style: { display: "flex", gap: "4px" } }, [
+          el("button", { class: "dms-tool-btn", onclick: function () { state.view = "periodDialog"; renderContent(); } }, ["\u8fd4\u56de"])
+        ])
+      ]));
+      card.appendChild(el("div", { class: "dms-diary-text", style: { marginTop: "10px" } }, [d.charDiary || ""]));
+
+      // 显示数据源
+      if (d.source === "daily" && d.sourceDiaries && d.sourceDiaries.length) {
+        card.appendChild(el("div", { style: { marginTop: "10px", fontSize: "12px", color: "var(--ink-dim)", borderTop: "1px dashed var(--line)", paddingTop: "8px" } }, [
+          "\u6574\u7406\u81ea\u4ee5\u4e0b\u6309\u65e5\u65e5\u8bb0\uff1a" + d.sourceDiaries.join(" \u3001 ")
+        ]));
+      }
+
+      // 同步到事实记忆按钮
+      card.appendChild(el("button", {
+        class: "dms-btn dms-btn-sm dms-btn-primary",
+        style: { marginTop: "10px" },
+        onclick: function () {
+          var ctx = d.ctx || { conversationId: d.conversationId, charName: d.charName, userName: d.userName, dateKey: d.periodKey, isGroup: d.isGroup };
+          syncFact(roche, ctx, d.charDiary).then(function () {
+            toast("\u5df2\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6");
+          }).catch(function (e) {
+            toast("\u540c\u6b65\u5931\u8d25\uff1a" + (e && e.message || e));
+          });
+        }
+      }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]));
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    /* ---------- 轮询批量生成视图 ---------- */
+    function buildBatchDialogView() {
+      var wrap = el("div", { class: "dms-wrap dms-fade-in" });
+      var card = el("div", { class: "dms-card" }, [
+        el("h2", {}, [el("span", { class: "dms-badge" }, ["\u2605"]), " \u8f6e\u8be2\u6279\u91cf\u751f\u6210"]),
+        el("div", { class: "dms-card-sub" }, ["\u9009\u62e9\u591a\u4e2a\u65e5\u671f\uff0c\u4f9d\u6b21\u751f\u6210\u6309\u65e5\u65e5\u8bb0\u3002"])
+      ]);
+
+      // 范围选择模式
+      var useRangeMode = false;
+      var rangeStartInput = el("input", { type: "date", class: "dms-input", style: { flex: "1" } });
+      var rangeEndInput = el("input", { type: "date", class: "dms-input", style: { flex: "1" } });
+      rangeStartInput.max = toDateInput(new Date());
+      rangeEndInput.max = toDateInput(new Date());
+
+      // 点选日期列表
+      var dateListContainer = el("div", { style: { marginTop: "10px", maxHeight: "200px", overflowY: "auto", border: "1px solid var(--line)", borderRadius: "6px", padding: "6px" } });
+      var selectedDates = {};
+
+      function renderDateList(availableDates) {
+        dateListContainer.innerHTML = "";
+        if (!availableDates.length) {
+          dateListContainer.appendChild(el("div", { class: "dms-empty" }, ["\u6682\u65e0\u6709\u8bb0\u5f55\u7684\u65e5\u671f"]));
+          return;
+        }
+        availableDates.forEach(function (dk) {
+          var checked = !!selectedDates[dk];
+          var item = el("label", { style: { display: "flex", alignItems: "center", gap: "6px", padding: "4px 0", cursor: "pointer" } }, [
+            el("input", { type: "checkbox", checked: checked, onchange: function (e) {
+              if (e.target.checked) selectedDates[dk] = true;
+              else delete selectedDates[dk];
+            } }),
+            el("span", {}, [dk])
+          ]);
+          dateListContainer.appendChild(item);
+        });
+      }
+
+      // 加载可用的日期
+      listAvailableDates(roche, state).then(function (dates) {
+        renderDateList(dates);
+      });
+
+      // 范围模式开关
+      var modeSwitch = makeSwitch("\u8303\u56f4\u9009\u62e9\u6a21\u5f0f", "\u5f00\u542f\u540e\u53ef\u9009\u8d77\u6b62\u65e5\u671f\uff0c\u81ea\u52a8\u8865\u5143\u8303\u56f4\u5185\u6240\u6709\u5929\u6570\uff1b\u5173\u95ed\u5219\u70b9\u9009\u5217\u8868", useRangeMode, function (v) {
+        useRangeMode = v;
+        rangeStartInput.disabled = !v;
+        rangeEndInput.disabled = !v;
+        dateListContainer.style.opacity = v ? "0.4" : "1";
+      });
+      card.appendChild(modeSwitch);
+
+      card.appendChild(el("div", { style: { marginTop: "8px", fontSize: "12px", color: "var(--ink-dim)" } }, ["\u53ef\u70b9\u9009\u7684\u65e5\u671f\uff1a"]));
+      card.appendChild(dateListContainer);
+
+      card.appendChild(el("div", { style: { marginTop: "8px", fontSize: "12px", color: "var(--ink-dim)" } }, ["\u6216\u9009\u8d77\u6b62\u65e5\u671f\uff1a"]));
+      card.appendChild(el("div", { style: { display: "flex", gap: "6px" } }, [rangeStartInput, rangeEndInput]));
+      rangeStartInput.disabled = true;
+      rangeEndInput.disabled = true;
+
+      // 覆盖已存在开关
+      var overwriteSwitch = makeSwitch("\u8986\u76d6\u5df2\u5b58\u5728\u65e5\u8bb0", "\u5f00\u542f\u540e\u5c06\u91cd\u65b0\u751f\u6210\u5df2\u6709\u65e5\u8bb0\u7684\u65e5\u671f", state.overwriteExisting || false, function (v) {
+        state.overwriteExisting = v;
+      });
+      card.appendChild(overwriteSwitch);
+
+      // 进度显示
+      var progressEl = el("div", { style: { marginTop: "10px", fontSize: "12px", color: "var(--blue)" } });
+      card.appendChild(progressEl);
+
+      // 开始按钮
+      var startBtn = el("button", { class: "dms-btn dms-btn-primary", style: { width: "100%", marginTop: "10px" } }, ["\u5f00\u59cb\u8f6e\u8be2\u751f\u6210"]);
+      startBtn.addEventListener("click", function () {
+        var dates = [];
+        if (useRangeMode) {
+          var s = rangeStartInput.value, e = rangeEndInput.value;
+          if (!s || !e) { toast("\u8bf7\u9009\u62e9\u8d77\u6b62\u65e5\u671f"); return; }
+          if (s > e) { toast("\u8d77\u59cb\u65e5\u671f\u4e0d\u80fd\u665a\u4e8e\u7ed3\u675f\u65e5\u671f"); return; }
+          // 补齐范围内所有天数
+          var cur = parseDateInput(s);
+          var endD = parseDateInput(e);
+          while (cur <= endD) {
+            dates.push(toDateKey(cur));
+            cur.setDate(cur.getDate() + 1);
+          }
+        } else {
+          dates = Object.keys(selectedDates).sort();
+        }
+        if (!dates.length) { toast("\u8bf7\u9009\u62e9\u81f3\u5c11\u4e00\u4e2a\u65e5\u671f"); return; }
+
+        startBtn.disabled = true;
+        startBtn.textContent = "\u751f\u6210\u4e2d...";
+        progressEl.textContent = "\u5f00\u59cb\u751f\u6210 0/" + dates.length;
+
+        batchGenerateDailyDiaries(roche, state, dates, function (idx, total, success, msg) {
+          progressEl.textContent = "\u8fdb\u5ea6 " + (idx + 1) + "/" + total + " - " + msg;
+        }).then(function (results) {
+          var successCount = results.filter(function (r) { return r.success; }).length;
+          var failCount = results.filter(function (r) { return !r.success; }).length;
+          progressEl.textContent = "\u5b8c\u6210\uff01\u6210\u529f " + successCount + " \u5931\u8d25 " + failCount;
+          startBtn.disabled = false;
+          startBtn.textContent = "\u91cd\u65b0\u5f00\u59cb";
+          toast("\u8f6e\u8be2\u751f\u6210\u5b8c\u6210");
+        }).catch(function (e) {
+          progressEl.textContent = "\u9519\u8bef\uff1a" + (e && e.message || e);
+          startBtn.disabled = false;
+          startBtn.textContent = "\u91cd\u65b0\u5f00\u59cb";
+        });
+      });
+      card.appendChild(startBtn);
+
+      card.appendChild(el("button", {
+        class: "dms-btn dms-btn-ghost",
+        style: { width: "100%", marginTop: "6px" },
+        onclick: function () { state.view = "cover"; renderContent(); }
+      }, ["\u8fd4\u56de"]));
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    /* ---------- 从长期记忆挑选视图 ---------- */
+    function buildPickFromMemoryView() {
+      var wrap = el("div", { class: "dms-wrap dms-fade-in" });
+      var card = el("div", { class: "dms-card" }, [
+        el("h2", {}, [el("span", { class: "dms-badge" }, ["\u2605"]), " \u4ece\u957f\u671f\u8bb0\u5fc6\u6311\u9009"]),
+        el("div", { class: "dms-card-sub" }, ["\u52fe\u9009\u540e\u70b9\u201c\u4fdd\u5b58\u4e3a\u6309\u65e5\u65e5\u8bb0\u201d\uff0c\u5373\u53ef\u4f5c\u4e3a\u5468\u671f\u6574\u7406\u7d20\u6750\u3002"])
+      ]);
+
+      var cid = state.selectedConv ? (state.selectedConv.conversationId || state.selectedConv.id) : "";
+      var pickedResults = [];
+      var checkedItems = {};  // dateKey → true
+
+      // 最低字数输入
+      var minCharsInput = el("input", { type: "number", class: "dms-input", value: "50", min: "0", step: "10", style: { width: "120px" } });
+      card.appendChild(el("div", { style: { marginBottom: "10px" } }, [
+        el("div", { style: { fontSize: "12px", color: "var(--ink-dim)", marginBottom: "4px" } }, ["\u6700\u4f4e\u5b57\u6570\u9650\u5236"]),
+        minCharsInput
+      ]));
+
+      var resultArea = el("div", { style: { marginTop: "10px", maxHeight: "350px", overflowY: "auto" } });
+      card.appendChild(resultArea);
+
+      // 全选行
+      var selectAllRow = el("div", { style: { display: "none", alignItems: "center", gap: "6px", marginBottom: "4px", fontSize: "11px", color: "var(--ink-dim)" } });
+      var selectAllCb = el("input", { type: "checkbox", onchange: function () {
+        pickedResults.forEach(function (item) { checkedItems[item.dateKey] = selectAllCb.checked; });
+        renderItemCheckboxes();
+      } });
+      selectAllRow.appendChild(selectAllCb);
+      selectAllRow.appendChild(el("span", {}, ["\u5168\u9009"]));
+      card.appendChild(selectAllRow);
+
+      function renderItemCheckboxes() {
+        var cbs = resultArea.querySelectorAll(".dms-pick-cb");
+        cbs.forEach(function (cb) {
+          cb.checked = !!checkedItems[cb.getAttribute("data-dk")];
+        });
+      }
+
+      // 后续操作按钮区
+      var actionArea = el("div", { style: { marginTop: "10px", display: "none", gap: "6px", flexWrap: "wrap" } });
+      card.appendChild(actionArea);
+
+      // 状态提示
+      var statusEl = el("div", { style: { fontSize: "12px", color: "var(--blue)", marginTop: "6px", display: "none" } });
+      card.appendChild(statusEl);
+
+      var loadBtn = el("button", { class: "dms-btn dms-btn-primary", style: { width: "100%" } }, ["\u52a0\u8f7d\u8bb0\u5fc6"]);
+      loadBtn.addEventListener("click", function () {
+        var minChars = parseInt(minCharsInput.value, 10) || 0;
+        loadBtn.disabled = true;
+        loadBtn.textContent = "\u52a0\u8f7d\u4e2d...";
+        resultArea.innerHTML = "";
+        checkedItems = {};
+        actionArea.style.display = "none";
+        selectAllRow.style.display = "none";
+        statusEl.style.display = "none";
+        card.querySelectorAll(".dms-stat-line").forEach(function (el) { el.remove(); });
+
+        pickDailyDiariesFromFactMemory(roche, cid, minChars).then(function (picked) {
+          loadBtn.disabled = false;
+          loadBtn.textContent = "\u91cd\u65b0\u52a0\u8f7d";
+          pickedResults = picked;
+          if (!picked.length) {
+            resultArea.appendChild(el("div", { class: "dms-empty" }, ["\u672a\u627e\u5230\u7b26\u5408\u6761\u4ef6\u7684\u8bb0\u5fc6\u3002"]));
+            return;
+          }
+          // 统计
+          var statLine = el("div", { class: "dms-stat-line", style: { fontSize: "12px", color: "var(--blue)", marginBottom: "6px" } }, ["\u627e\u5230 " + picked.length + " \u7bc7"]);
+          card.insertBefore(statLine, resultArea);
+
+          picked.forEach(function (item) {
+            var d = el("div", { class: "dms-hist", style: { cursor: "pointer", display: "flex", alignItems: "center", gap: "6px" } });
+            var cb = el("input", { type: "checkbox", class: "dms-pick-cb", "data-dk": item.dateKey, onclick: function (e) {
+              e.stopPropagation();
+              checkedItems[item.dateKey] = cb.checked;
+            } });
+            d.appendChild(cb);
+            var info = el("div", { style: { flex: "1" }, onclick: function () {
+              showFullTextPopup(item.dateKey, item.text);
+            } }, [
+              el("div", { class: "dms-hist-head" }, [
+                el("div", { class: "dms-hist-title" }, [item.dateKey]),
+                el("div", { class: "dms-hist-date" }, [item.text.length + " \u5b57"])
+              ]),
+              el("div", { class: "dms-hist-snippet" }, [item.text.slice(0, 80) + "\u2026"])
+            ]);
+            d.appendChild(info);
+            resultArea.appendChild(d);
+          });
+
+          // 显示操作按钮
+          selectAllRow.style.display = "flex";
+          actionArea.style.display = "flex";
+          actionArea.innerHTML = "";
+          // 保存为按日日记
+          actionArea.appendChild(el("button", {
+            class: "dms-btn dms-btn-sm dms-btn-primary",
+            onclick: function () {
+              var toSave = pickedResults.filter(function (item) { return checkedItems[item.dateKey]; });
+              if (!toSave.length) { toast("\u8bf7\u5148\u52fe\u9009\u8981\u4fdd\u5b58\u7684\u65e5\u8bb0"); return; }
+              var info = convInfo(state.selectedConv);
+              var saved = 0, skipped = 0;
+              var promises = toSave.map(function (item) {
+                var diaryKey = cid + ":" + item.dateKey;
+                // 先检查是否已存在
+                return getDiaryByMode(roche, "solo", diaryKey).then(function (existing) {
+                  if (existing) { skipped++; return; }
+                  var diaryData = {
+                    conversationId: cid,
+                    charName: info.name,
+                    userName: "",
+                    dateKey: item.dateKey,
+                    isGroup: info.isGroup,
+                    mode: "solo",
+                    charDiary: item.text,
+                    userDiary: "",
+                    annotations: [],
+                    stickers: [],
+                    charAnnotations: [],
+                    ctx: null,
+                    createdAt: Date.now(),
+                    updatedAt: Date.now()
+                  };
+                  return saveDiaryByMode(roche, "solo", diaryKey, diaryData).then(function () { saved++; });
+                });
+              });
+              var btn = this;
+              btn.disabled = true;
+              btn.textContent = "\u4fdd\u5b58\u4e2d...";
+              Promise.all(promises).then(function () {
+                statusEl.style.display = "block";
+                statusEl.textContent = "\u5df2\u4fdd\u5b58 " + saved + " \u7bc7" + (skipped ? "\uff0c\u8df3\u8fc7 " + skipped + " \u7bc7\u5df2\u5b58\u5728" : "");
+                btn.disabled = false;
+                btn.textContent = "\u4fdd\u5b58\u4e3a\u6309\u65e5\u65e5\u8bb0";
+                toast("\u4fdd\u5b58\u5b8c\u6210");
+              }).catch(function (e) {
+                statusEl.style.display = "block";
+                statusEl.textContent = "\u4fdd\u5b58\u5931\u8d25\uff1a" + (e && e.message || e);
+                btn.disabled = false;
+                btn.textContent = "\u4fdd\u5b58\u4e3a\u6309\u65e5\u65e5\u8bb0";
+              });
+            }
+          }, ["\u4fdd\u5b58\u52fe\u9009\u7684\u4e3a\u6309\u65e5\u65e5\u8bb0"]));
+          // 去周期整理
+          actionArea.appendChild(el("button", {
+            class: "dms-btn dms-btn-sm dms-btn-ghost",
+            onclick: function () {
+              state.view = "periodDialog";
+              renderContent();
+              toast("\u73b0\u5728\u53ef\u5728\u5468\u671f\u6574\u7406\u4e2d\u9009\u62e9\u201c\u5df2\u751f\u6210\u7684\u6309\u65e5\u65e5\u8bb0\u201d\u4f5c\u4e3a\u7d20\u6750");
+            }
+          }, ["\u53bb\u5468\u671f\u6574\u7406"]));
+        }).catch(function (e) {
+          loadBtn.disabled = false;
+          loadBtn.textContent = "\u91cd\u65b0\u52a0\u8f7d";
+          resultArea.appendChild(el("div", { class: "dms-empty" }, ["\u52a0\u8f7d\u5931\u8d25\uff1a" + (e && e.message || e)]));
+        });
+      });
+      card.appendChild(loadBtn);
+
+      card.appendChild(el("button", {
+        class: "dms-btn dms-btn-ghost",
+        style: { width: "100%", marginTop: "6px" },
+        onclick: function () { state.view = "cover"; renderContent(); }
+      }, ["\u8fd4\u56de"]));
+      wrap.appendChild(card);
+      return wrap;
+    }
+
+    /* 全文查看弹窗 */
+    function showFullTextPopup(title, text) {
+      var old = qs(".dms-fulltext-popup", document);
+      if (old) old.remove();
+      var overlay = el("div", {
+        class: "dms-fulltext-popup dms-float",
+        style: { position: "fixed", inset: "0", background: "rgba(74,60,40,0.5)", zIndex: "700", display: "flex", alignItems: "center", justifyContent: "center", padding: "20px" }
+      });
+      var dlg = el("div", {
+        class: "dms-card",
+        style: { maxWidth: "600px", width: "100%", maxHeight: "80vh", overflowY: "auto", background: "var(--paper)" }
+      }, [
+        el("div", { class: "dms-page-header" }, [
+          el("div", { class: "dms-page-title" }, [title]),
+          el("button", { class: "dms-tool-btn", onclick: function () { overlay.remove(); } }, ["\u5173\u95ed"])
+        ]),
+        el("div", { class: "dms-diary-text", style: { marginTop: "10px" } }, [text])
+      ]);
+      overlay.appendChild(dlg);
+      overlay.addEventListener("click", function (e) { if (e.target === overlay) overlay.remove(); });
+      document.body.appendChild(overlay);
+    }
+
     /* ---------- 历史记录 ---------- */
     function buildHistory() {
       var wrap = el("div", { class: "dms-wrap dms-fade-in" });
       var card = el("div", { class: "dms-card" }, [
         el("h2", {}, ["\u5386\u53f2\u65e5\u8bb0"]),
-        el("div", { class: "dms-card-sub" }, ["\u4fdd\u5b58\u5728\u672c\u63d2\u4ef6\u79c1\u6709\u5b58\u50a8\uff0c\u5378\u8f7d\u4f1a\u4e00\u5e76\u6e05\u9664\u3002"])
+        el("div", { class: "dms-card-sub" }, ["\u4ea4\u6362\u65e5\u8bb0\u4e0e char \u65e5\u8bb0\u5206\u5f00\u5b58\u50a8\uff0c\u5378\u8f7d\u4f1a\u4e00\u5e76\u6e05\u9664\u3002"])
       ]);
       wrap.appendChild(card);
-      getDiaries(roche).then(function (all) {
-        var keys = Object.keys(all).sort(function (a, b) {
-          return (all[b].updatedAt || all[b].createdAt || 0) - (all[a].updatedAt || all[a].createdAt || 0);
+      getAllDiariesBothModes(roche).then(function (result) {
+        // 合并 swap 和 solo，标注类型
+        var allEntries = [];
+        Object.keys(result.swap).forEach(function (k) {
+          allEntries.push({ key: k, mode: "swap", data: result.swap[k] });
         });
-        if (!keys.length) {
+        Object.keys(result.solo).forEach(function (k) {
+          allEntries.push({ key: k, mode: "solo", data: result.solo[k] });
+        });
+        allEntries.sort(function (a, b) {
+          return (b.data.updatedAt || b.data.createdAt || 0) - (a.data.updatedAt || a.data.createdAt || 0);
+        });
+
+        if (!allEntries.length) {
           card.appendChild(el("div", { class: "dms-empty" }, ["\u6682\u65e0\u65e5\u8bb0\u3002"]));
         } else {
-          keys.forEach(function (k) {
-            var it = all[k];
+          allEntries.forEach(function (entry) {
+            var it = entry.data;
+            var mode = entry.mode;
             var item = el("div", { class: "dms-hist", onclick: function () {
-              state.diaryKey = k;
+              state.diaryKey = entry.key;
+              state.diaryMode = mode;    // 切换到对应存储
               state.currentDiary = it;
               state.selectedConvId = it.conversationId || "";
               state.selectedConv = { conversationId: it.conversationId, name: it.charName, handle: it.charName };
               state.selectedDate = parseDateInput(it.dateKey || toDateInput(new Date()));
               state.lastError = "";
-              // 根据交换模式与日记内容设置子视图
-              if (state.settings.swapMode) {
+              // 根据日记类型与内容设置子视图
+              if (mode === "swap") {
                 state.subView = (it.userDiary && it.userDiary.trim()) ? "charDiary" : "userWrite";
               } else {
                 state.subView = null;
@@ -3205,8 +4484,14 @@
               state.view = "diary";
               renderContent();
             } });
+            // 类型标签
+            var modeLabel = mode === "swap" ? "\u4ea4\u6362\u65e5\u8bb0" : "char\u65e5\u8bb0";
+            var modeColor = mode === "swap" ? "var(--red)" : "var(--blue)";
             item.appendChild(el("div", { class: "dms-hist-head" }, [
-              el("div", { class: "dms-hist-title" }, [(it.charName || "\u672a\u77e5") + " \u00b7 " + (it.dateKey || "")]),
+              el("div", { class: "dms-hist-title" }, [
+                (it.charName || "\u672a\u77e5") + " \u00b7 " + (it.dateKey || ""),
+                el("span", { style: { fontSize: "10px", color: modeColor, marginLeft: "6px", border: "1px solid " + modeColor, borderRadius: "3px", padding: "0 4px" } }, [modeLabel])
+              ]),
               el("div", { class: "dms-hist-date" }, [new Date(it.updatedAt || it.createdAt || 0).toLocaleString()])
             ]));
             item.appendChild(el("div", { class: "dms-hist-snippet" }, [(it.charDiary || "").slice(0, 60) + "\u2026"]));
@@ -3217,18 +4502,27 @@
             var btns = el("div", { style: { marginTop: "8px", display: "flex", gap: "6px" } });
             btns.appendChild(el("button", { class: "dms-btn dms-btn-sm", onclick: function (ev) {
               ev.stopPropagation();
-              deleteDiary(roche, k).then(function () { toast("\u5df2\u5220\u9664"); renderContent(); });
+              deleteDiaryByMode(roche, mode, entry.key).then(function () { toast("\u5df2\u5220\u9664"); renderContent(); });
             } }, ["\u5220\u9664"]));
             item.appendChild(btns);
             card.appendChild(item);
           });
-          card.appendChild(el("div", { style: { marginTop: "10px" } }, [
+          card.appendChild(el("div", { style: { marginTop: "10px", display: "flex", gap: "6px", flexWrap: "wrap" } }, [
             el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
-              roche.ui.confirm({ title: "\u6e05\u7a7a", message: "\u6e05\u7a7a\u5168\u90e8\u65e5\u8bb0\uff1f" }).then(function (ok) {
+              roche.ui.confirm({ title: "\u6e05\u7a7a", message: "\u6e05\u7a7a\u5168\u90e8\u65e5\u8bb0\uff08\u4ea4\u6362\u65e5\u8bb0 + char\u65e5\u8bb0\uff09\uff1f" }).then(function (ok) {
                 if (!ok) return;
-                return roche.storage.set(STORAGE_DIARIES, {}).then(function () { toast("\u5df2\u6e05\u7a7a"); renderContent(); });
+                return Promise.all([
+                  roche.storage.set(STORAGE_DIARIES_SWAP, {}),
+                  roche.storage.set(STORAGE_DIARIES_SOLO, {})
+                ]).then(function () { toast("\u5df2\u6e05\u7a7a"); renderContent(); });
               });
-            } }, ["\u6e05\u7a7a\u5168\u90e8"])
+            } }, ["\u6e05\u7a7a\u65e5\u8bb0"]),
+            el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+              roche.ui.confirm({ title: "\u6e05\u7a7a", message: "\u6e05\u7a7a\u5168\u90e8\u5468\u671f\u603b\u7ed3\uff1f" }).then(function (ok) {
+                if (!ok) return;
+                return roche.storage.set(STORAGE_DIARIES_PERIOD, {}).then(function () { toast("\u5df2\u6e05\u7a7a"); renderContent(); });
+              });
+            } }, ["\u6e05\u7a7a\u5468\u671f\u603b\u7ed3"])
           ]));
         }
       });
@@ -3246,17 +4540,19 @@
       state.lastError = "";
       state.syncDialogShown = false;
 
-      getDiary(roche, state.diaryKey).then(function (existing) {
+      // 根据 swapMode 决定 diaryMode：交换日记 vs char独自日记
+      // 这决定使用哪个存储，彻底分开两种数据
+      state.diaryMode = state.settings.swapMode ? "swap" : "solo";
+
+      getDiaryByMode(roche, state.diaryMode, state.diaryKey).then(function (existing) {
         // 已有日记，直接打开（不强制重写）
         if (existing && existing.charDiary && !forceRegen) {
           state.currentDiary = existing;
-          if (state.settings.swapMode && existing.userDiary && existing.userDiary.trim()) {
-            // 交换模式且 user 已写过 → 直接进入看 char 日记模式
-            state.subView = "charDiary";
-          } else if (state.settings.swapMode) {
-            // 交换模式但 user 还没写 → 进入写日记模式
-            state.subView = "userWrite";
+          // 交换日记：根据 userDiary 内容决定子视图
+          if (state.diaryMode === "swap") {
+            state.subView = (existing.userDiary && existing.userDiary.trim()) ? "charDiary" : "userWrite";
           } else {
+            // char独自日记：无子视图，直接双页显示
             state.subView = null;
           }
           state.view = "diary";
@@ -3273,6 +4569,7 @@
             userName: "",
             dateKey: toDateKey(state.selectedDate),
             isGroup: info.isGroup,
+            mode: "swap",
             charDiary: "",
             userDiary: "",
             annotations: [],
@@ -3333,29 +4630,36 @@
           ? generateCharDiaryWithUserRef(roche, ctx, state.settings, userDiaryText)
           : generateCharDiary(roche, ctx, state.settings);
 
-        return genP.then(function (text) {
+        return genP.then(function (result) {
+          // 兼容：交换模式返回 { diary, charAnnotations }，非交换模式返回 text
+          var diaryText = (typeof result === "string") ? result : (result.diary || "");
+          var newCharAnnots = (typeof result === "object" && result.charAnnotations) ? result.charAnnotations : [];
+          // 合并：交换模式下用新生成的 charAnnotations 覆盖旧的（批注+便签一起重新生成）
+          var charAnnots = userDiaryText.trim() ? newCharAnnots : ((existing && existing.charAnnotations) || []);
           var diaryData = {
             conversationId: ctx.conversationId,
             charName: ctx.charName,
             userName: ctx.userName,
             dateKey: ctx.dateKey,
             isGroup: ctx.isGroup,
-            charDiary: text || "",
-            userDiary: (existing && existing.userDiary) || (state.currentDiary && state.currentDiary.userDiary) || "",
+            mode: state.diaryMode,    // 记录日记类型，避免串台
+            charDiary: diaryText || "",
+            // 修复缓存串台 bug：userDiary 只从 existing 取，不从 state.currentDiary 残留取
+            userDiary: (existing && existing.userDiary) || (state.diaryMode === "swap" && state.currentDiary && state.currentDiary.userDiary) || "",
             annotations: (existing && existing.annotations) || [],
             stickers: (existing && existing.stickers) || [],
-            charAnnotations: (existing && existing.charAnnotations) || [],
+            charAnnotations: charAnnots,
             ctx: ctx,
             createdAt: (existing && existing.createdAt) || (state.currentDiary && state.currentDiary.createdAt) || Date.now(),
             updatedAt: Date.now()
           };
-          return saveDiary(roche, state.diaryKey, diaryData).then(function () {
+          return saveDiaryByMode(roche, state.diaryMode, state.diaryKey, diaryData).then(function () {
             state.currentDiary = diaryData;
             // 设置子视图
             if (state.settings.swapMode) state.subView = "charDiary";
             else state.subView = null;
             // 弹同步选项对话框
-            return showSyncOptionsDialog(ctx, text || "").then(function () {
+            return showSyncOptionsDialog(ctx, diaryText || "").then(function () {
               state.generating = false;
               state.generatingMsg = "";
               state.lastError = "";
@@ -3373,80 +4677,143 @@
       });
     }
 
-    /* ---------- 交换模式：带 user 日记参考生成 char 日记 + 并行给 user 贴便签 ---------- */
+    /* ---------- 交换模式：一次性生成 char 日记 + 给 user 的批注 + 便签 ---------- */
     function generateCharDiaryWithUserRef(roche, ctx, settings, userDiaryText) {
       var msgs = buildCharDiaryMessages(ctx, settings);
       // 在最后追加 user 的日记作为参考
       msgs.push({ role: "assistant", content: "\u3010" + (ctx.userName || "\u7528\u6237") + "\u521a\u5199\u7684\u65e5\u8bb0\u3011\n" + userDiaryText + "\n\n\u8bf7\u5728\u4f60\u7684\u65e5\u8bb0\u4e2d\u56de\u5e94\u5bf9\u8bdd TA \u7684\u65e5\u8bb0\u3002" });
       msgs.push({ role: "user", content:
-        "\u73b0\u5728\u8bf7\u4f60\u5199\u4f60\u7684\u65e5\u8bb0\u3002\n\n" +
-        "\u540c\u65f6\uff0c\u8bf7\u4f60\u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u7ed9 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u8d34\u4e0a 4~6 \u5f20\u4fbf\u7b7e\u3002\n" +
-        "\u4fbf\u7b7e\u8981\u6c42\uff1a\n" +
-        "1. \u9009\u62e9\u4f60\u6709\u611f\u89c9\u7684\u6bb5\u843d\u6216\u53e5\u5b50\uff0c\u7559\u4e0b\u4f60\u7684\u60f3\u6cd5\u3001\u611f\u53d7\u6216\u8c03\u76ae\u3002\n" +
-        "2. \u4fbf\u7b7e\u5185\u5bb9\u8981\u7b26\u5408 " + (ctx.charName || "\u89d2\u8272") + " \u7684\u4eba\u8bbe\u53e3\u543b\u3002\n" +
-        "3. \u8f93\u51fa\u683c\u5f0f\uff08\u4e25\u683c\u9075\u5b88\uff09\uff1a\n" +
-        "\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011\n" +
-        "\u5185\u5bb9\u4e00\n" +
-        "\u5185\u5bb9\u4e8c\n" +
-        "...\n" +
-        "\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011\n\n" +
-        "\u6ce8\u610f\uff1a\u4fbf\u7b7e\u5185\u5bb9\u5355\u72ec\u6210\u884c\uff0c\u4e0d\u8981\u548c\u65e5\u8bb0\u6df7\u5728\u4e00\u8d77\u3002\u65e5\u8bb0\u548c\u4fbf\u7b7e\u90fd\u7528\u4e0a\u9762\u7684\u6807\u8bb0\u5206\u9694\u3002"
+        "\u73b0\u5728\u8bf7\u4f60\u540c\u65f6\u5b8c\u6210\u4e09\u4ef6\u4e8b\uff1a\n\n" +
+        "1. \u5199\u4f60\u7684\u65e5\u8bb0\uff08\u4ee5\u4f60\u81ea\u5df1\u7684\u53e3\u543b\u56de\u5e94 TA \u7684\u65e5\u8bb0\uff09\n" +
+        "2. \u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u5728 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u4e0a\u505a\u6587\u5b57\u6279\u6ce8\uff08\u5212\u6389/\u8868\u7675/\u6279\u6ce8\uff09\n" +
+        "3. \u7ed9 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u8d34 4~6 \u5f20\u4fbf\u7b7e\n\n" +
+        "\u4e25\u683c\u6309\u4ee5\u4e0b\u683c\u5f0f\u8f93\u51fa\uff08\u4e0d\u8981\u8f93\u51fa\u5176\u4ed6\u5185\u5bb9\uff09\uff1a\n" +
+        "\u3010\u65e5\u8bb0\u5f00\u59cb\u3011\n\u4f60\u7684\u65e5\u8bb0\u6b63\u6587\u2026\n\u3010\u65e5\u8bb0\u7ed3\u675f\u3011\n\n" +
+        "\u3010\u6279\u6ce8\u5f00\u59cb\u3011\n" +
+        "[{\"type\":\"comment\",\"selectedText\":\"user\u65e5\u8bb0\u91cc\u7684\u539f\u6587\",\"comment\":\"\u4f60\u7684\u60f3\u6cd5\"},\n" +
+        "{\"type\":\"heart\",\"selectedText\":\"user\u65e5\u8bb0\u91cc\u7684\u539f\u6587\"},\n" +
+        "{\"type\":\"crossout\",\"selectedText\":\"user\u65e5\u8bb0\u91cc\u7684\u539f\u6587\",\"comment\":\"\u4e3a\u4ec0\u4e48\u5212\u6389\"}]\n" +
+        "\u3010\u6279\u6ce8\u7ed3\u675f\u3011\n\n" +
+        "\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011\n\u4fbf\u7b7e\u4e00\n\u4fbf\u7b7e\u4e8c\n...\n\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011\n\n" +
+        "\u6279\u6ce8\u8bf4\u660e\uff1a\n" +
+        "- type \u53ea\u80fd\u662f comment / heart / crossout \u4e09\u79cd\n" +
+        "- heart \u662f\u8868\u7675\uff08\u4e0d\u9700 comment\uff09\uff0ccrossout \u662f\u5212\u6389\uff08\u53ef\u5e26 comment \u8bf4\u660e\u539f\u56e0\uff09\uff0ccomment \u662f\u6279\u6ce8\uff08\u5e26 comment\uff09\n" +
+        "- selectedText \u5fc5\u987b\u662f user \u65e5\u8bb0\u91cc\u7684\u539f\u6587\uff08\u539f\u6837\u590d\u5236\uff0c\u4e0d\u8981\u4fee\u6539\uff09\n" +
+        "- \u6279\u6ce8 3~6 \u6761\uff0c\u4e0d\u8981\u592a\u591a\n\n" +
+        "\u4fbf\u7b7e\u8bf4\u660e\uff1a\n" +
+        "- \u9009\u4f60\u6709\u611f\u89c9\u7684\u70b9\uff0c\u7559\u4e0b\u60f3\u6cd5/\u611f\u53d7/\u8c03\u76ae\n" +
+        "- \u7b26\u5408 " + (ctx.charName || "\u89d2\u8272") + " \u7684\u4eba\u8bbe\u53e3\u543b\n" +
+        "- 4~6 \u5f20\uff0c\u6bcf\u5f20\u5355\u72ec\u4e00\u884c"
       });
       return callAI(roche, msgs, 0.7).then(function (text) {
         var parsed = parseCharDiaryAndStickyNotes(text);
-        if (parsed.stickyNotes.length > 0) {
-          if (!state.currentDiary) state.currentDiary = {};
-          var charDefaultStyle = state.settings.defaultCharStickyStyle;
-          state.currentDiary.charAnnotations = (state.currentDiary.charAnnotations || []).concat(
-            parsed.stickyNotes.map(function (note, idx) {
-              var sid = (charDefaultStyle != null) ? charDefaultStyle : (idx % 10);
-              return {
-                id: "charNote" + Date.now() + "_" + idx,
-                type: "sticky",
-                comment: note,
-                x: 20 + (idx * 60) + Math.random() * 40,
-                y: 60 + (idx * 80) + Math.random() * 40,
-                styleId: sid,
-                byChar: true,
-                createdAt: Date.now()
-              };
-            })
-          );
-        }
-        return parsed.diary;
+        // 构造 charAnnotations：批注 + 便签
+        var charAnnots = [];
+        var charDefaultStyle = state.settings.defaultCharStickyStyle;
+        // 预解析 user 日记的段落，便于把 char 批注/便签关联到正确段落
+        var userBlocks = parseBlocks(userDiaryText);
+        // 批注：根据 selectedText 在 user 日记中的字符位置计算 blockId
+        parsed.annotations.forEach(function (a, idx) {
+          var blockId = null;
+          if (a.selectedText) {
+            var pos = userDiaryText.indexOf(a.selectedText);
+            if (pos >= 0) blockId = blockOfPos(userBlocks, pos);
+          }
+          charAnnots.push({
+            id: "charAnnot" + Date.now() + "_" + idx,
+            type: a.type,
+            selectedText: a.selectedText,
+            comment: a.comment || "",
+            blockId: blockId,
+            byChar: true,
+            createdAt: Date.now()
+          });
+        });
+        // 便签：均匀分布到不同段落（让 short-term 注入时能挂到段落上）
+        parsed.stickyNotes.forEach(function (note, idx) {
+          var sid = (charDefaultStyle != null) ? charDefaultStyle : (idx % 10);
+          var stickyBlockId = null;
+          if (userBlocks.length) {
+            // 让便签依次落在各段，循环分配
+            stickyBlockId = userBlocks[idx % userBlocks.length].id;
+          }
+          charAnnots.push({
+            id: "charNote" + Date.now() + "_" + idx,
+            type: "sticky",
+            comment: note,
+            x: 20 + (idx * 60) + Math.random() * 40,
+            y: 60 + (idx * 80) + Math.random() * 40,
+            styleId: sid,
+            blockId: stickyBlockId,
+            byChar: true,
+            createdAt: Date.now()
+          });
+        });
+        return { diary: parsed.diary, charAnnotations: charAnnots };
       });
     }
 
-    /* ---------- 解析 char 输出：分离日记和便签 ---------- */
+    /* ---------- 解析 char 输出：分离日记、批注、便签 ---------- */
     function parseCharDiaryAndStickyNotes(text) {
-      if (!text) return { diary: "", stickyNotes: [] };
-      var diary = text;
+      if (!text) return { diary: "", annotations: [], stickyNotes: [] };
+      var diary = "";
+      var annotations = [];
       var stickyNotes = [];
+
+      // 提取日记
+      var diaryRe = /\u3010\u65e5\u8bb0\u5f00\u59cb\u3011([\s\S]*?)\u3010\u65e5\u8bb0\u7ed3\u675f\u3011/g;
+      var dm = diaryRe.exec(text);
+      if (dm) diary = dm[1].trim();
+      else diary = text.trim();
+
+      // 提取批注 JSON
+      var annotRe = /\u3010\u6279\u6ce8\u5f00\u59cb\u3011([\s\S]*?)\u3010\u6279\u6ce8\u7ed3\u675f\u3011/g;
+      var am = annotRe.exec(text);
+      if (am) {
+        var jsonStr = am[1].trim();
+        // 尝试提取 JSON 数组
+        var jsonMatch = jsonStr.match(/\[[\s\S]*\]/);
+        if (jsonMatch) {
+          try { annotations = JSON.parse(jsonMatch[0]); }
+          catch (e) { annotations = []; }
+        }
+      }
+      // 过滤无效批注
+      annotations = annotations.filter(function (a) {
+        return a && a.type && a.selectedText &&
+          ["comment", "heart", "crossout"].indexOf(a.type) >= 0;
+      });
+
+      // 提取便签
       var stickyRe = /\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011([\s\S]*?)\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011/g;
-      var m;
-      while ((m = stickyRe.exec(text)) !== null) {
-        var content = m[1].trim();
+      var sm;
+      while ((sm = stickyRe.exec(text)) !== null) {
+        var content = sm[1].trim();
         content.split("\n").forEach(function (line) {
           line = line.trim();
           if (line) stickyNotes.push(line);
         });
       }
-      diary = text.replace(stickyRe, "").trim();
-      if (stickyNotes.length === 0) {
+
+      // 如果没有任何标记，尝试旧格式（【便签】行）
+      if (!diary && !annotations.length && !stickyNotes.length) {
         var lines = text.split("\n");
         var diaryLines = [];
         lines.forEach(function (line) {
-          var sm = line.match(/^\u3010\u4fbf\u7b7e\u3011\s*(.*)$/);
-          if (sm) {
-            if (sm[1].trim()) stickyNotes.push(sm[1].trim());
+          var sm2 = line.match(/^\u3010\u4fbf\u7b7e\u3011\s*(.*)$/);
+          if (sm2) {
+            if (sm2[1].trim()) stickyNotes.push(sm2[1].trim());
           } else {
             diaryLines.push(line);
           }
         });
         if (stickyNotes.length > 0) diary = diaryLines.join("\n").trim();
+        else diary = text.trim();
       }
+
       if (stickyNotes.length > 6) stickyNotes = stickyNotes.slice(0, 6);
-      return { diary: diary, stickyNotes: stickyNotes };
+      if (annotations.length > 6) annotations = annotations.slice(0, 6);
+      return { diary: diary, annotations: annotations, stickyNotes: stickyNotes };
     }
 
     /* ---------- 同步选项对话框（生成后弹出） ---------- */
@@ -3676,50 +5043,51 @@
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + charName + " \u7ed9 " + userName + " \u7684\u65e5\u8bb0\u3011");
         var charBlocks = parseBlocks(diary.charDiary);
-        // user 给 char 留的批注（heart/crossout/comment，带 selectedText）和便签（sticky）
         var userAnnotsOnChar = (diary.annotations || []).filter(function (a) {
           return a.type === "sticky" || a.selectedText;
         });
         var charStickers = diary.stickers || [];
-        var unboundAnnots = [];
-        var unboundStickers = [];
         charBlocks.forEach(function (blk) {
           parts.push("");
           parts.push(blk.content);
-          // 段落内的文字批注（user 在 char 文字上做的标记）
+          // 文字批注
           var blkTextAnnots = userAnnotsOnChar.filter(function (a) {
             return a.selectedText && (a.blockId || null) === blk.id;
           });
           blkTextAnnots.forEach(function (a) {
             var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-            parts.push("  \u3010" + userName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+            var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
+            parts.push("  \u3010" + userName + " " + label + "\uff1a" + body + "\u3011");
           });
-          // 段落内的便签
+          // 便签
           var blkAnnots = userAnnotsOnChar.filter(function (a) {
             return a.type === "sticky" && (a.blockId || null) === blk.id;
           });
           blkAnnots.forEach(function (a) {
-            parts.push("  \u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            parts.push("  \u3010" + userName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
           });
+          // 表情包
           var blkStk = charStickers.filter(function (s) { return (s.blockId || null) === blk.id; });
           blkStk.forEach(function (s) {
-            parts.push("  \u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+            parts.push("  \u3010" + userName + " \u7684\u8868\u60c5\uff1a" + (s.caption || "\u65e0\u6587\u5b57\u8bf4\u660e") + "\u3011");
           });
         });
-        unboundAnnots = userAnnotsOnChar.filter(function (a) { return !a.blockId; });
-        unboundStickers = charStickers.filter(function (s) { return !s.blockId; });
+        // 未绑定段落的
+        var unboundAnnots = userAnnotsOnChar.filter(function (a) { return !a.blockId; });
+        var unboundStickers = charStickers.filter(function (s) { return !s.blockId; });
         if (unboundAnnots.length || unboundStickers.length) {
           parts.push("");
           unboundAnnots.forEach(function (a) {
             if (a.selectedText) {
               var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-              parts.push("\u3010" + userName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+              var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
+              parts.push("\u3010" + userName + " " + label + "\uff1a" + body + "\u3011");
             } else {
-              parts.push("\u3010" + userName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+              parts.push("\u3010" + userName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
             }
           });
           unboundStickers.forEach(function (s) {
-            parts.push("\u3010" + userName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+            parts.push("\u3010" + userName + " \u7684\u8868\u60c5\uff1a" + (s.caption || "\u65e0\u6587\u5b57\u8bf4\u660e") + "\u3011");
           });
         }
       }
@@ -3729,7 +5097,6 @@
         parts.push("\n\u2014\u2014\u2014\u2014\u2014");
         parts.push("\u3010" + userName + " \u7ed9 " + charName + " \u7684\u65e5\u8bb0\u3011");
         var userBlocks = parseBlocks(diary.userDiary);
-        // char 给 user 留的批注（heart/crossout/comment，带 selectedText）和便签（sticky）
         var charAnnotsOnUser = (diary.charAnnotations || []).filter(function (a) {
           return a.type === "sticky" || a.selectedText;
         });
@@ -3737,22 +5104,26 @@
         userBlocks.forEach(function (blk) {
           parts.push("");
           parts.push(blk.content);
+          // 文字批注
           var blkTextAnnots = charAnnotsOnUser.filter(function (a) {
             return a.selectedText && (a.blockId || null) === blk.id;
           });
           blkTextAnnots.forEach(function (a) {
             var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-            parts.push("  \u3010" + charName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+            var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
+            parts.push("  \u3010" + charName + " " + label + "\uff1a" + body + "\u3011");
           });
+          // 便签
           var blkStickies = charAnnotsOnUser.filter(function (a) {
             return a.type === "sticky" && (a.blockId || null) === blk.id;
           });
           blkStickies.forEach(function (a) {
-            parts.push("  \u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+            parts.push("  \u3010" + charName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
           });
+          // 表情包
           var blkStk = charStickersOnUser.filter(function (s) { return (s.blockId || null) === blk.id; });
           blkStk.forEach(function (s) {
-            parts.push("  \u3010" + charName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+            parts.push("  \u3010" + charName + " \u7684\u8868\u60c5\uff1a" + (s.caption || "\u65e0\u6587\u5b57\u8bf4\u660e") + "\u3011");
           });
         });
         var unboundCharAnnots = charAnnotsOnUser.filter(function (a) { return !a.blockId; });
@@ -3762,13 +5133,14 @@
           unboundCharAnnots.forEach(function (a) {
             if (a.selectedText) {
               var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-              parts.push("\u3010" + charName + " " + label + "\u300c" + (a.selectedText || "") + "\u300d" + (a.comment ? "\uff1a" + a.comment : "") + "\u3011");
+              var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
+              parts.push("\u3010" + charName + " " + label + "\uff1a" + body + "\u3011");
             } else {
-              parts.push("\u3010" + charName + " \u8d34\u7684\u4fbf\u7b7e\u3011" + (a.comment || ""));
+              parts.push("\u3010" + charName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
             }
           });
           unboundCharStickers.forEach(function (s) {
-            parts.push("\u3010" + charName + " \u8d34\u7684\u8868\u60c5\u3011" + (s.caption || "\uff08\u65e0\u6587\u5b57\u8bf4\u660e\uff09") + " " + (s.url || ""));
+            parts.push("\u3010" + charName + " \u7684\u8868\u60c5\uff1a" + (s.caption || "\u65e0\u6587\u5b57\u8bf4\u660e") + "\u3011");
           });
         }
       }
@@ -3776,42 +5148,38 @@
       return parts.join("\n");
     }
 
-    /* ---------- 让TA批注我的日记 ---------- */
+    /* ---------- 让TA重新回写日记（一次性生成日记+批注+便签）---------- */
     function onCharAnnotate() {
       if (state.generating) return;
       if (!state.currentDiary) return;
       var userText = state.currentDiary.userDiary || "";
       if (!userText.trim()) { toast("\u8bf7\u5148\u5199\u4e0b\u4f60\u7684\u65e5\u8bb0"); return; }
-      state.generating = true;
-      state.generatingMsg = "TA \u6b63\u5728\u8bfb\u4f60\u7684\u65e5\u8bb0\u2026";
-      renderContent();
-      var ctx = state.currentDiary.ctx;
-      generateCharAnnotations(roche, ctx, userText, state.settings).then(function (annots) {
-        if (!annots || !annots.length) {
-          toast("TA\u6ca1\u6709\u4ec0\u4e48\u60f3\u8bf4\u7684\u2026");
-        } else {
-          // 只替换文字批注（heart/crossout/comment），保留 sticky 类型便签（char 给 user 的便签）
-          var newAnnots = annots.map(function (a) {
-            a.id = crypto.randomUUID();
-            a.createdAt = Date.now();
-            return a;
-          });
-          var keptStickies = (state.currentDiary.charAnnotations || []).filter(function (a) {
-            return a.type === "sticky";
-          });
-          state.currentDiary.charAnnotations = newAnnots.concat(keptStickies);
+      roche.ui.confirm({
+        title: "\u8ba9TA\u91cd\u65b0\u56de\u5199",
+        message: "\u5c06\u91cd\u65b0\u751f\u6210 TA \u7684\u65e5\u8bb0\u3001\u5bf9\u4f60\u7684\u6279\u6ce8\u548c\u4fbf\u7b7e\u3002\u539f\u6709\u5185\u5bb9\u4f1a\u88ab\u8986\u76d6\uff0c\u662f\u5426\u7ee7\u7eed\uff1f"
+      }).then(function (ok) {
+        if (!ok) return;
+        state.generating = true;
+        state.generatingMsg = "TA \u6b63\u5728\u91cd\u65b0\u56de\u5199\u2026";
+        renderContent();
+        var ctx = state.currentDiary.ctx;
+        generateCharDiaryWithUserRef(roche, ctx, state.settings, userText).then(function (result) {
+          state.currentDiary.charDiary = result.diary || "";
+          state.currentDiary.charAnnotations = result.charAnnotations || [];
           state.currentDiary.updatedAt = Date.now();
           return saveCurrentDiary().then(function () {
-            toast("TA\u6279\u6ce8\u4e86 " + annots.length + " \u5904");
+            var annotCount = (result.charAnnotations || []).filter(function (a) { return a.selectedText; }).length;
+            var stickyCount = (result.charAnnotations || []).filter(function (a) { return a.type === "sticky"; }).length;
+            toast("TA\u91cd\u5199\u4e86\u65e5\u8bb0\uff0c\u6279\u6ce8 " + annotCount + " \u5904\uff0c\u8d34 " + stickyCount + " \u5f20\u4fbf\u7b7e");
           });
-        }
-      }).catch(function (e) {
-        toast("\u5931\u8d25");
-        console.error(e);
-      }).then(function () {
-        state.generating = false;
-        state.generatingMsg = "";
-        renderContent();
+        }).catch(function (e) {
+          toast("\u5931\u8d25");
+          console.error(e);
+        }).then(function () {
+          state.generating = false;
+          state.generatingMsg = "";
+          renderContent();
+        });
       });
     }
 
@@ -3823,18 +5191,24 @@
       return new Promise(function (resolve) {
         saveTimer = setTimeout(function () {
           state.currentDiary.updatedAt = Date.now();
-          saveDiary(roche, state.diaryKey, state.currentDiary).then(resolve).catch(resolve);
+          // 确保 mode 字段一致
+          var mode = state.currentDiary.mode || state.diaryMode || "solo";
+          state.currentDiary.mode = mode;
+          saveDiaryByMode(roche, mode, state.diaryKey, state.currentDiary).then(resolve).catch(resolve);
         }, 500);
       });
     }
 
     /* ---------- 加载 ---------- */
     function loadAll() {
-      return loadConversations(roche).then(function (convs) {
-        state.conversations = convs;
-        if (state.settings.useWorldbook) {
-          return loadWbTree(roche).then(function (t) { state.worldbookTree = t; });
-        }
+      // 先迁移旧数据（如果还没迁移过）
+      return migrateOldDiariesIfNeeded(roche).then(function () {
+        return loadConversations(roche).then(function (convs) {
+          state.conversations = convs;
+          if (state.settings.useWorldbook) {
+            return loadWbTree(roche).then(function (t) { state.worldbookTree = t; });
+          }
+        });
       });
     }
 

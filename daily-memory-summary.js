@@ -478,7 +478,7 @@
     var half = day <= 15 ? 1 : 2;
     return x.getFullYear() + "-H" + half + "-" + pad2(x.getMonth() + 1);
   }
-  function getPeriodRange(period, dateRef) {
+  function getPeriodRange(period, dateRef, days) {
     // 返回 [startDateKey, endDateKey] 闭区间
     var d = new Date(dateRef);
     var start, end;
@@ -495,30 +495,43 @@
         start = new Date(d.getFullYear(), d.getMonth(), 16);
         end = new Date(d.getFullYear(), d.getMonth() + 1, 0); // 月末
       }
+    } else if (period === "dayN") {
+      // 自定义 N 天：以基准日期为终点，向前推 days-1 天
+      var n = Math.max(1, parseInt(days, 10) || 1);
+      end = new Date(d); end.setHours(0,0,0,0);
+      start = new Date(end); start.setDate(end.getDate() - (n - 1));
     } else { // month
       start = new Date(d.getFullYear(), d.getMonth(), 1);
       end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
     }
     return [toDateKey(start), toDateKey(end)];
   }
-  function getPeriodLabel(period) {
-    return period === "week" ? "按周" : period === "halfmonth" ? "按半月" : "按月";
+  function getPeriodLabel(period, days) {
+    if (period === "dayN") return (parseInt(days, 10) || 1) + "\u5929";
+    return period === "week" ? "\u6309\u5468" : period === "halfmonth" ? "\u6309\u534a\u6708" : "\u6309\u6708";
   }
 
   /* ---------- 周期整理生成函数 ----------
-   * period: "week" | "halfmonth" | "month"
+   * period: "week" | "halfmonth" | "month" | "dayN"
    * source: "chat"=整理聊天记录 | "daily"=整理已生成的按日日记
    * dateRef: 基准日期（用于确定周期范围）
+   * days: 自定义天数（period="dayN" 时有效）
    */
-  function generatePeriodDiary(roche, state, period, source, dateRef) {
+  function generatePeriodDiary(roche, state, period, source, dateRef, days) {
     var conv = state.selectedConv;
     if (!conv) return Promise.reject(new Error("\u8bf7\u5148\u9009\u62e9\u7b14\u53cb"));
     var cid = conv.conversationId || conv.id;
-    var range = getPeriodRange(period, dateRef);
+    var range = getPeriodRange(period, dateRef, days);
     var startKey = range[0], endKey = range[1];
-    var periodKey = period === "week" ? getWeekKey(dateRef)
-                   : period === "halfmonth" ? getHalfMonthKey(dateRef)
-                   : getMonthKey(dateRef);
+    var periodKey;
+    if (period === "dayN") {
+      // 自定义天数：直接用起止日期作为 key
+      periodKey = startKey + "~" + endKey;
+    } else {
+      periodKey = period === "week" ? getWeekKey(dateRef)
+                  : period === "halfmonth" ? getHalfMonthKey(dateRef)
+                  : getMonthKey(dateRef);
+    }
     var diaryKey = cid + ":" + periodKey;
 
     // 构造 ctx（复用 buildCtx，但 dayShort 按范围聚合）
@@ -529,7 +542,7 @@
       if (source === "daily" && (!ctx.dailyDiaries || !ctx.dailyDiaries.length)) {
         return Promise.reject(new Error("\u8be5\u5468\u671f\u5185\u65e0\u5df2\u751f\u6210\u7684\u6309\u65e5\u65e5\u8bb0"));
       }
-      var msgs = buildPeriodDiaryMessages(ctx, state.settings, period, source, startKey, endKey);
+      var msgs = buildPeriodDiaryMessages(ctx, state.settings, period, source, startKey, endKey, days);
       return callAI(roche, msgs, 0.7).then(function (text) {
         var diaryData = {
           conversationId: cid,
@@ -539,6 +552,7 @@
           isGroup: ctx.isGroup,
           mode: "period",
           period: period,
+          periodDays: (period === "dayN") ? (parseInt(days, 10) || 1) : undefined,
           periodKey: periodKey,
           dateRange: range,
           source: source,
@@ -629,8 +643,8 @@
   }
 
   /* 构造周期整理的 messages */
-  function buildPeriodDiaryMessages(ctx, settings, period, source, startKey, endKey) {
-    var periodLabel = getPeriodLabel(period);
+  function buildPeriodDiaryMessages(ctx, settings, period, source, startKey, endKey, days) {
+    var periodLabel = getPeriodLabel(period, days);
     var sys = [];
     sys.push("\u4f60\u662f " + (ctx.charName || "\u89d2\u8272") + "\u3002\u8bf7\u4ee5\u7b2c\u4e00\u4eba\u79f0\u5199\u4e00\u7bc7" + periodLabel + " (" + startKey + " \u81f3 " + endKey + ") \u7684\u65e5\u8bb0\u603b\u7ed3\u3002");
     if (ctx.userPersona) sys.push("\u3010\u7528\u6237\u4eba\u8bbe\u3011" + ctx.userPersona);
@@ -3914,8 +3928,10 @@
 
       // 周期类型选择
       var periodType = "week";
-      var typeGroup = el("div", { style: { display: "flex", gap: "6px", marginBottom: "10px" } });
-      [["week", "\u6309\u5468"], ["halfmonth", "\u6309\u534a\u6708"], ["month", "\u6309\u6708"]].forEach(function (opt) {
+      var customDays = 3;  // 自定义天数默认值
+      var typeGroup = el("div", { style: { display: "flex", gap: "6px", marginBottom: "10px", flexWrap: "wrap" } });
+      var periodBtns = {};
+      [["week", "\u6309\u5468"], ["halfmonth", "\u6309\u534a\u6708"], ["month", "\u6309\u6708"], ["dayN", "\u81ea\u5b9a\u4e49\u5929\u6570"]].forEach(function (opt) {
         var btn = el("button", {
           class: "dms-btn dms-btn-sm" + (periodType === opt[0] ? " dms-btn-primary" : " dms-btn-ghost"),
           onclick: function () {
@@ -3926,17 +3942,34 @@
             });
             btn.classList.remove("dms-btn-ghost");
             btn.classList.add("dms-btn-primary");
+            customDaysRow.style.display = (periodType === "dayN") ? "flex" : "none";
             updateRangeHint();
           }
         }, [opt[1]]);
+        periodBtns[opt[0]] = btn;
         typeGroup.appendChild(btn);
       });
       card.appendChild(typeGroup);
 
+      // 自定义天数输入行（默认隐藏）
+      var customDaysRow = el("div", { style: { display: "none", alignItems: "center", gap: "8px", marginBottom: "10px" } });
+      customDaysRow.appendChild(el("label", { style: { fontSize: "12px", color: "var(--ink-dim)" } }, ["\u5929\u6570\uff1a"]));
+      var daysInput = el("input", {
+        type: "number", min: "1", max: "60", step: "1", value: String(customDays),
+        style: { width: "70px", padding: "4px 8px", fontSize: "12px", border: "1px solid var(--line)", borderRadius: "4px" },
+        oninput: function () {
+          customDays = Math.max(1, parseInt(this.value, 10) || 1);
+          updateRangeHint();
+        }
+      });
+      customDaysRow.appendChild(daysInput);
+      customDaysRow.appendChild(el("span", { style: { fontSize: "11px", color: "var(--ink-mute)" } }, ["\u4ee5\u57fa\u51c6\u65e5\u671f\u4e3a\u7ec8\u70b9\uff0c\u5411\u524d\u7edf\u8ba1 N \u5929"]));
+      card.appendChild(customDaysRow);
+
       // 范围提示
       var rangeHint = el("div", { style: { fontSize: "12px", color: "var(--blue)", marginBottom: "10px" } });
       function updateRangeHint() {
-        var r = getPeriodRange(periodType, state.selectedDate);
+        var r = getPeriodRange(periodType, state.selectedDate, customDays);
         rangeHint.textContent = "\u8303\u56f4\uff1a" + r[0] + " \u81f3 " + r[1];
       }
       updateRangeHint();
@@ -4019,9 +4052,9 @@
         genBtn.disabled = true;
         genBtn.textContent = "\u751f\u6210\u4e2d...";
         state.generating = true;
-        state.generatingMsg = "\u6b63\u5728\u751f\u6210" + getPeriodLabel(periodType) + "\u603b\u7ed3";
+        state.generatingMsg = "\u6b63\u5728\u751f\u6210" + getPeriodLabel(periodType, customDays) + "\u603b\u7ed3";
         renderContent();
-        generatePeriodDiary(roche, state, periodType, sourceType, state.selectedDate).then(function (result) {
+        generatePeriodDiary(roche, state, periodType, sourceType, state.selectedDate, customDays).then(function (result) {
           state.generating = false;
           state.generatingMsg = "";
           // 进入展示视图
@@ -4094,7 +4127,7 @@
       var card = el("div", { class: "dms-card" });
       card.appendChild(el("div", { class: "dms-page-header" }, [
         el("div", {}, [
-          el("div", { class: "dms-page-title" }, [getPeriodLabel(d.period) + " " + (d.periodKey || "")]),
+          el("div", { class: "dms-page-title" }, [getPeriodLabel(d.period, d.periodDays) + " " + (d.periodKey || "")]),
           el("div", { class: "dms-page-meta" }, [(d.dateRange || []).join(" \u81f3 ")])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [

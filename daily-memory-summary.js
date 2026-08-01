@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.9
+ * 手账日记 (daily-memory-summary) v2.7.0
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -4430,21 +4430,32 @@
             onclick: function () {
               var toSave = pickedResults.filter(function (item) { return checkedItems[item.dateKey]; });
               if (!toSave.length) { toast("\u8bf7\u5148\u52fe\u9009\u8981\u4fdd\u5b58\u7684\u65e5\u8bb0"); return; }
+              // 按日期聚合：同一天的多条事实记忆合并为一篇，避免重复日期互相覆盖
+              var byDate = {};
+              toSave.forEach(function (item) {
+                if (!byDate[item.dateKey]) byDate[item.dateKey] = [];
+                byDate[item.dateKey].push(item.text);
+              });
+              var groups = Object.keys(byDate).map(function (k) { return { dateKey: k, texts: byDate[k] }; });
               var info = convInfo(state.selectedConv);
-              var saved = 0, skipped = 0;
-              var promises = toSave.map(function (item) {
-                var diaryKey = cid + ":" + item.dateKey;
-                // 先检查是否已存在
-                return getDiaryByMode(roche, "solo", diaryKey).then(function (existing) {
-                  if (existing) { skipped++; return; }
-                  var diaryData = {
+              var btn = this;
+              btn.disabled = true;
+              btn.textContent = "\u4fdd\u5b58\u4e2d...";
+              // 关键：一次性读取整份数据 → 全部写入内存 → 单次 set 写回，
+              // 避免多个 Promise 并发读写互相覆盖（之前全选保存只留 1 篇的根因）
+              getDiariesByMode(roche, "solo").then(function (all) {
+                var saved = 0, skipped = 0;
+                groups.forEach(function (g) {
+                  var diaryKey = cid + ":" + g.dateKey;
+                  if (all[diaryKey]) { skipped++; return; }
+                  all[diaryKey] = {
                     conversationId: cid,
                     charName: info.name,
                     userName: "",
-                    dateKey: item.dateKey,
+                    dateKey: g.dateKey,
                     isGroup: info.isGroup,
                     mode: "solo",
-                    charDiary: item.text,
+                    charDiary: g.texts.join("\n\n"),
                     userDiary: "",
                     annotations: [],
                     stickers: [],
@@ -4453,18 +4464,15 @@
                     createdAt: Date.now(),
                     updatedAt: Date.now()
                   };
-                  return saveDiaryByMode(roche, "solo", diaryKey, diaryData).then(function () { saved++; });
+                  saved++;
                 });
-              });
-              var btn = this;
-              btn.disabled = true;
-              btn.textContent = "\u4fdd\u5b58\u4e2d...";
-              Promise.all(promises).then(function () {
-                statusEl.style.display = "block";
-                statusEl.textContent = "\u5df2\u4fdd\u5b58 " + saved + " \u7bc7" + (skipped ? "\uff0c\u8df3\u8fc7 " + skipped + " \u7bc7\u5df2\u5b58\u5728" : "");
-                btn.disabled = false;
-                btn.textContent = "\u4fdd\u5b58\u4e3a\u6309\u65e5\u65e5\u8bb0";
-                toast("\u4fdd\u5b58\u5b8c\u6210");
+                return roche.storage.set(storageKeyFor("solo"), all).then(function () {
+                  statusEl.style.display = "block";
+                  statusEl.textContent = "\u5df2\u4fdd\u5b58 " + saved + " \u7bc7" + (skipped ? "\uff0c\u8df3\u8fc7 " + skipped + " \u7bc7\u5df2\u5b58\u5728" : "");
+                  btn.disabled = false;
+                  btn.textContent = "\u4fdd\u5b58\u4e3a\u6309\u65e5\u65e5\u8bb0";
+                  toast("\u4fdd\u5b58\u5b8c\u6210");
+                });
               }).catch(function (e) {
                 statusEl.style.display = "block";
                 statusEl.textContent = "\u4fdd\u5b58\u5931\u8d25\uff1a" + (e && e.message || e);
@@ -5325,7 +5333,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.8",
+    version: "2.7.0",
     apps: [
       {
         id: "daily-memory-summary-home",

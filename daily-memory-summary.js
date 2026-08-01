@@ -2266,10 +2266,19 @@
       hideAnnotMenu();
       var rect = range.getBoundingClientRect();
       var menu = el("div", { class: "dms-annot-menu dms-float", style: {
-        left: (rect.left + rect.width / 2) + "px",
-        top: (rect.bottom + window.scrollY + 6) + "px",
-        transform: "translateX(-50%)"
+        left: "0px", top: "0px", visibility: "hidden"
       }});
+      // 先挂载测量尺寸，再按 fixed 视口坐标定位（不能再加 window.scrollY，否则滚动后菜单会跑出屏幕）
+      document.body.appendChild(menu);
+      var mw = menu.offsetWidth || 160, mh = menu.offsetHeight || 40;
+      var cx = rect.left + rect.width / 2;
+      var left = Math.max(mw / 2 + 8, Math.min(cx, window.innerWidth - mw / 2 - 8));
+      var top = rect.bottom + 6;
+      if (top + mh > window.innerHeight - 8) top = Math.max(8, rect.top - mh - 6);
+      menu.style.left = left + "px";
+      menu.style.top = top + "px";
+      menu.style.transform = "translateX(-50%)";
+      menu.style.visibility = "visible";
 
       var inputBox = el("textarea", { class: "dms-annot-input", placeholder: "\u5199\u4e0b\u4f60\u7684\u60f3\u6cd5\u2026" });
 
@@ -2308,11 +2317,10 @@
 
       menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("comment"); } }, ["\u6279\u6ce8"]));
       menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("crossout"); } }, ["\u5212\u6389"]));
-      menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("heart"); } }, ["\u8868\u7675"]));
+      menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("heart"); } }, ["\u8868\u767d"]));
       menu.appendChild(inputBox);
       menu.appendChild(el("button", { class: "dms-tool-btn", style: { alignSelf: "flex-end" }, onclick: function () { doAnnotate("comment"); } }, ["\u786e\u5b9a"]));
 
-      document.body.appendChild(menu);
       state.annotMenuEl = menu;
 
       setTimeout(function () {
@@ -4718,7 +4726,7 @@
       msgs.push({ role: "user", content:
         "\u73b0\u5728\u8bf7\u4f60\u540c\u65f6\u5b8c\u6210\u4e09\u4ef6\u4e8b\uff1a\n\n" +
         "1. \u5199\u4f60\u7684\u65e5\u8bb0\uff08\u4ee5\u4f60\u81ea\u5df1\u7684\u53e3\u543b\u56de\u5e94 TA \u7684\u65e5\u8bb0\uff09\n" +
-        "2. \u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u5728 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u4e0a\u505a\u6587\u5b57\u6279\u6ce8\uff08\u5212\u6389/\u8868\u7675/\u6279\u6ce8\uff09\n" +
+        "2. \u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u5728 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u4e0a\u505a\u6587\u5b57\u6279\u6ce8\uff08\u5212\u6389/\u8868\u767d/\u6279\u6ce8\uff09\n" +
         "3. \u7ed9 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u8d34 4~6 \u5f20\u4fbf\u7b7e\n\n" +
         "\u4e25\u683c\u6309\u4ee5\u4e0b\u683c\u5f0f\u8f93\u51fa\uff08\u4e0d\u8981\u8f93\u51fa\u5176\u4ed6\u5185\u5bb9\uff09\uff1a\n" +
         "\u3010\u65e5\u8bb0\u5f00\u59cb\u3011\n\u4f60\u7684\u65e5\u8bb0\u6b63\u6587\u2026\n\u3010\u65e5\u8bb0\u7ed3\u675f\u3011\n\n" +
@@ -4730,7 +4738,7 @@
         "\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011\n\u4fbf\u7b7e\u4e00\n\u4fbf\u7b7e\u4e8c\n...\n\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011\n\n" +
         "\u6279\u6ce8\u8bf4\u660e\uff1a\n" +
         "- type \u53ea\u80fd\u662f comment / heart / crossout \u4e09\u79cd\n" +
-        "- heart \u662f\u8868\u7675\uff08\u4e0d\u9700 comment\uff09\uff0ccrossout \u662f\u5212\u6389\uff08\u53ef\u5e26 comment \u8bf4\u660e\u539f\u56e0\uff09\uff0ccomment \u662f\u6279\u6ce8\uff08\u5e26 comment\uff09\n" +
+        "- heart \u662f\u8868\u767d\uff08\u4e0d\u9700 comment\uff09\uff0ccrossout \u662f\u5212\u6389\uff08\u53ef\u5e26 comment \u8bf4\u660e\u539f\u56e0\uff09\uff0ccomment \u662f\u6279\u6ce8\uff08\u5e26 comment\uff09\n" +
         "- selectedText \u5fc5\u987b\u662f user \u65e5\u8bb0\u91cc\u7684\u539f\u6587\uff08\u539f\u6837\u590d\u5236\uff0c\u4e0d\u8981\u4fee\u6539\uff09\n" +
         "- \u6279\u6ce8 3~6 \u6761\uff0c\u4e0d\u8981\u592a\u591a\n\n" +
         "\u4fbf\u7b7e\u8bf4\u660e\uff1a\n" +
@@ -5060,6 +5068,21 @@
       });
     }
 
+    /* ---------- 批注行格式（注入短期记忆用）----------
+     * 文字批注（批注/表白/划掉）：【who 批注：批注内容 ‖ 原文「原句」】
+     * 无批注内容时：【who 表白：原文「原句」】
+     * 固定分隔符 ‖（U+2016）与「」便于解析端拆分"原句"和"批注内容"
+     */
+    function buildAnnotLabel(a) {
+      return a.type === "heart" ? "\u8868\u767d" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
+    }
+    function buildAnnotBody(a) {
+      if (a.selectedText) {
+        return (a.comment ? a.comment + " \u2016 \u539f\u6587\u300c" + a.selectedText + "\u300d" : "\u539f\u6587\u300c" + a.selectedText + "\u300d");
+      }
+      return a.comment || "";
+    }
+
     /* ---------- 拼装短期记忆注入文本（按段落联动便签/贴纸） ---------- */
     function buildShortTermInjectText(diary) {
       if (!diary) return "";
@@ -5088,9 +5111,7 @@
             return a.selectedText && (a.blockId || null) === blk.id;
           });
           blkTextAnnots.forEach(function (a) {
-            var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-            var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
-            parts.push("  \u3010" + userName + " " + label + "\uff1a" + body + "\u3011");
+            parts.push("  \u3010" + userName + " " + buildAnnotLabel(a) + "\uff1a" + buildAnnotBody(a) + "\u3011");
           });
           // 便签
           var blkAnnots = userAnnotsOnChar.filter(function (a) {
@@ -5112,9 +5133,7 @@
           parts.push("");
           unboundAnnots.forEach(function (a) {
             if (a.selectedText) {
-              var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-              var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
-              parts.push("\u3010" + userName + " " + label + "\uff1a" + body + "\u3011");
+              parts.push("\u3010" + userName + " " + buildAnnotLabel(a) + "\uff1a" + buildAnnotBody(a) + "\u3011");
             } else {
               parts.push("\u3010" + userName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
             }
@@ -5142,9 +5161,7 @@
             return a.selectedText && (a.blockId || null) === blk.id;
           });
           blkTextAnnots.forEach(function (a) {
-            var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-            var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
-            parts.push("  \u3010" + charName + " " + label + "\uff1a" + body + "\u3011");
+            parts.push("  \u3010" + charName + " " + buildAnnotLabel(a) + "\uff1a" + buildAnnotBody(a) + "\u3011");
           });
           // 便签
           var blkStickies = charAnnotsOnUser.filter(function (a) {
@@ -5165,9 +5182,7 @@
           parts.push("");
           unboundCharAnnots.forEach(function (a) {
             if (a.selectedText) {
-              var label = a.type === "heart" ? "\u8868\u7675" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
-              var body = (a.selectedText || "") + (a.comment ? "\uff0c" + a.comment : "");
-              parts.push("\u3010" + charName + " " + label + "\uff1a" + body + "\u3011");
+              parts.push("\u3010" + charName + " " + buildAnnotLabel(a) + "\uff1a" + buildAnnotBody(a) + "\u3011");
             } else {
               parts.push("\u3010" + charName + " \u7684\u4fbf\u7b7e\uff1a" + (a.comment || "") + "\u3011");
             }

@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.7.12
+ * 手账日记 (daily-memory-summary) v2.7.13
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -5134,7 +5134,7 @@
       return { diary: diary, annotations: annotations, stickyNotes: stickyNotes, stickerNotes: stickerNotes };
     }
 
-    /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为 TA（char）的消息注入主聊天 ---------- */
+    /* ---------- 把交换日记注入主聊天：单聊作为 TA（char）消息，群聊用系统消息 ---------- */
     function syncShortTerm(roche, ctx, diary) {
       if (!diary) return Promise.resolve();
       var cid = ctx && ctx.conversationId;
@@ -5142,20 +5142,23 @@
       if (!text) { console.warn("[DMS] syncShortTerm: empty text"); return Promise.resolve(); }
       console.log("[DMS] syncShortTerm start, cid=", cid, "text length=", text.length);
 
-      // 角色（TA）信息：从当前选中会话解析 senderId / senderName
-      var senderId = "";
-      var senderName = (ctx && ctx.charName) || "TA";
       var conv = state.selectedConv;
-      if (conv) {
-        if (conv.contactId) senderId = conv.contactId;
-        else if (conv.memberProfiles && conv.memberProfiles.length) {
-          var mp = conv.memberProfiles[0];
-          senderId = mp.id || mp.contactId || "";
-          if (!senderName || senderName === "TA") senderName = mp.handle || mp.name || senderName;
-        }
+      var isGroup = !!(conv && (conv.isGroup || conv.type === "group"));
+
+      // 群聊：无法用角色注入，只能用系统消息
+      if (isGroup) {
+        console.log("[DMS] group conversation, use system notice");
+        return injectSystemNotice(cid, text);
       }
 
-      // 优先用 RocheToolkit.simulateCharMessage（角色消息，type:'text'，可正常渲染）
+      // 单聊：作为 TA（char）的消息注入（可正常渲染）
+      var senderId = (conv && conv.contactId) || "";
+      var senderName = (ctx && ctx.charName) || "TA";
+      return injectCharMessage(cid, text, senderName, senderId);
+    }
+
+    /* ---------- 角色（TA）消息注入：simulateCharMessage 优先，IndexedDB 回退 ---------- */
+    function injectCharMessage(cid, text, senderName, senderId) {
       var tk = window.RocheToolkit || (window.parent && window.parent.RocheToolkit) || (window.top && window.top.RocheToolkit);
       if (tk && (typeof tk.simulateCharMessage === "function" || typeof tk.simulateOfflineCharMessage === "function")) {
         try {
@@ -5169,13 +5172,33 @@
           });
         } catch (e) { console.error("[DMS] simulateCharMessage throw", e); }
       }
-
-      // 回退：直接操作 IndexedDB（与 simulateCharMessage 相同的角色消息格式）
-      console.log("[DMS] RocheToolkit not found, direct IndexedDB inject");
+      console.log("[DMS] RocheToolkit not found, direct IndexedDB char inject");
       return injectCharMessageToIndexedDB(cid, text, senderName, senderId).then(function (id) {
-        console.log("[DMS] IndexedDB inject OK, id=", id);
+        console.log("[DMS] IndexedDB char inject OK, id=", id);
       }).catch(function (e) {
-        console.error("[DMS] IndexedDB inject fail", e);
+        console.error("[DMS] IndexedDB char inject fail", e);
+        toast("\u77ed\u671f\u8bb0\u5fc6\u6ce8\u5165\u5931\u8d25\uff1a" + (e && e.message || e));
+      });
+    }
+
+    /* ---------- 系统消息注入：simulateSystemNotice 优先，IndexedDB 回退（群聊用） ---------- */
+    function injectSystemNotice(cid, text) {
+      var tk = window.RocheToolkit || (window.parent && window.parent.RocheToolkit) || (window.top && window.top.RocheToolkit);
+      if (tk && typeof tk.simulateSystemNotice === "function") {
+        try {
+          return Promise.resolve(tk.simulateSystemNotice(cid, text, "diary")).then(function (id) {
+            console.log("[DMS] simulateSystemNotice OK, id=", id);
+          }).catch(function (e) {
+            console.error("[DMS] simulateSystemNotice fail", e);
+            return injectSystemNoticeToIndexedDB(cid, text);
+          });
+        } catch (e) { console.error("[DMS] simulateSystemNotice throw", e); }
+      }
+      console.log("[DMS] RocheToolkit not found, direct IndexedDB system inject");
+      return injectSystemNoticeToIndexedDB(cid, text).then(function (id) {
+        console.log("[DMS] IndexedDB system inject OK, id=", id);
+      }).catch(function (e) {
+        console.error("[DMS] IndexedDB system inject fail", e);
         toast("\u77ed\u671f\u8bb0\u5fc6\u6ce8\u5165\u5931\u8d25\uff1a" + (e && e.message || e));
       });
     }
@@ -5199,6 +5222,41 @@
               conversationId: conversationId,
               senderId: senderId || "",
               senderName: senderName || "TA"
+            };
+            var addReq = store.add(msg);
+            addReq.onsuccess = function () { resolve(addReq.result); };
+            addReq.onerror = function () { reject(addReq.error); };
+            tx.oncomplete = function () { db.close(); };
+            tx.onerror = function () { db.close(); };
+            tx.onabort = function () { db.close(); };
+          } catch (e) {
+            db.close();
+            reject(e);
+          }
+        };
+        req.onerror = function () { reject(req.error); };
+      });
+    }
+
+    /* ---------- 直接操作 IndexedDB 注入系统消息 ---------- */
+    function injectSystemNoticeToIndexedDB(conversationId, text) {
+      return new Promise(function (resolve, reject) {
+        var req = indexedDB.open("Roche_db");
+        req.onsuccess = function () {
+          var db = req.result;
+          try {
+            var tx = db.transaction("messages", "readwrite");
+            var store = tx.objectStore("messages");
+            var now = Date.now();
+            var msg = {
+              id: now + Math.floor(Math.random() * 1000),
+              isMe: false,
+              text: text,
+              type: "system_notice",
+              timestamp: now,
+              conversationId: conversationId,
+              senderId: "__system__",
+              senderName: "System"
             };
             var addReq = store.add(msg);
             addReq.onsuccess = function () { resolve(addReq.result); };
@@ -5432,7 +5490,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.7.12",
+    version: "2.7.13",
     apps: [
       {
         id: "daily-memory-summary-home",

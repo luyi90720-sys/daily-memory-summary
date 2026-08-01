@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.7.1
+ * 手账日记 (daily-memory-summary) v2.7.2
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -3754,7 +3754,7 @@
 
       var area = el("textarea", {
         class: "dms-textarea",
-        placeholder: "\u6708\u85aa\u55b5\u6652\u7194\u4e86:`https://cdn.imgos.cn/vip/2026/05/18/6a09f39b2734e.gif`\n\u6708\u85aa\u55b5\u542c\u6b4c:`https://cdn.imgos.cn/vip/2026/05/18/6a09f34aefaf1.gif`\n\u6708\u85aa\u55b5\u517b\u751f:`https://cdn.imgos.cn/vip/2026/05/18/6a09f34b35a6.gif`\nhttps://example.com/sticker.png",
+        placeholder: "\u793a\u4f8b\uff1a\u5f00\u5fc3:`https://example.com/sticker1.png`\n\u751f\u6c14:`https://example.com/sticker2.gif`\n\u53ef\u601c:\u53ef\u601c\u56fe\u7247\u94fe\u63a5.png",
         style: { width: "100%", minHeight: "160px", fontFamily: "monospace", fontSize: "11px", whiteSpace: "pre" }
       });
       dlg.appendChild(area);
@@ -3818,8 +3818,9 @@
       box.innerHTML = "";
       getStickerLib(roche).then(function (lib) {
         state.stickerLib = lib;
-        // 新建组
-        var addGroupBtn = el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", style: { marginBottom: "8px" } }, ["\u65b0\u5efa\u7ec4"]);
+        // 顶部操作行：新建组 + 挂载组到会话
+        var opsRow = el("div", { style: { display: "flex", gap: "6px", marginBottom: "8px", flexWrap: "wrap" } });
+        var addGroupBtn = el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost" }, ["\u65b0\u5efa\u7ec4"]);
         addGroupBtn.addEventListener("click", function () {
           var name = window.prompt("\u7ec4\u540d\uff08\u5982\uff1a\u9ed1\u8138\u3001\u53ef\u7231\u3001\u840c\u7cfb\uff09", "\u65b0\u7ec4");
           if (!name || !name.trim()) return;
@@ -3827,7 +3828,13 @@
           lib.groups.push(g);
           saveStickerLib(roche, lib).then(function () { renderStickerLibManager(box); toast("\u5df2\u65b0\u5efa"); });
         });
-        box.appendChild(addGroupBtn);
+        opsRow.appendChild(addGroupBtn);
+        // 挂载组到当前会话
+        opsRow.appendChild(el("button", { class: "dms-btn dms-btn-sm dms-btn-primary", onclick: function () {
+          if (!state.selectedConv) { toast("\u8bf7\u5148\u5728\u4e3b\u9875\u9009\u62e9\u7b14\u53cb"); return; }
+          openStickerMountDialog(state.selectedConv);
+        } }, ["\u6302\u8f7d\u7ec4\u5230\u4f1a\u8bdd"]));
+        box.appendChild(opsRow);
 
         if (!lib.groups.length) {
           box.appendChild(el("div", { class: "dms-empty" }, ["\u8fd8\u6ca1\u6709\u8868\u60c5\u5305\u7ec4\uff0c\u70b9\u4e0a\u9762\u65b0\u5efa\u3002"]));
@@ -5196,7 +5203,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.7.1",
+    version: "2.7.2",
     apps: [
       {
         id: "daily-memory-summary-home",

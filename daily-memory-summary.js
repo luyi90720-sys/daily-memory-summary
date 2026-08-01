@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.1
+ * 手账日记 (daily-memory-summary) v2.6.2
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -1256,6 +1256,9 @@
       "  color:var(--red);font-weight:600;background:rgba(196,69,54,0.08);",
       "  border-bottom:1px solid var(--red);",
       "}",
+      // 叠加组合（同一原句多批注）：表白+划掉去下边框，有批注时用蓝色虚线边框
+      "." + ROOT_CLASS + " .dms-annot-heart.dms-annot-crossout{border-bottom:none;}",
+      "." + ROOT_CLASS + " .dms-annot-heart.dms-annot-comment{border-bottom:1.5px dashed var(--blue);}",
       "." + ROOT_CLASS + " .dms-annot-tooltip{",
       "  position:absolute;bottom:100%;left:50%;transform:translateX(-50%) translateY(-4px);",
       "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius-sm);",
@@ -2231,35 +2234,51 @@
     }
 
     // 在一段文本上渲染批注（无块概念）
+    // 同一原句（start/end 相同）的多个批注合并渲染：原文只出现一次，效果叠加
+    // （如 表白+划掉 = 红色加粗删除线，划掉+批注 = 删除线+蓝色虚线，三者叠加 = 全效果）
     function renderPlainAnnotated(container, text, annots) {
-      // 允许同一原句叠加多个批注（划掉+表白+批注），不再按 end 去重丢弃
-      var merged = annots.slice().sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
-      var pos = 0;
-      merged.forEach(function (a) {
-        if (a.start > pos) {
-          container.appendChild(document.createTextNode(text.slice(pos, a.start)));
-        }
-        var span = el("span", {
-          class: "dms-annot dms-annot-" + a.type,
-          "data-annot-id": a.id,
-          "data-block-id": a.blockId || "",
-          "data-marker": a.type === "heart" ? "\u2665" : (a.type === "crossout" ? "~" : "*")
-        });
-        if (a.type === "crossout") {
-          var del = el("del", { style: { textDecorationColor: "var(--red)" } });
-          del.textContent = text.slice(a.start, a.end);
-          span.appendChild(del);
+      var sorted = annots.slice().sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
+      var groups = [];
+      sorted.forEach(function (a) {
+        var last = groups[groups.length - 1];
+        // 范围重叠/相邻的批注合并成一组，避免原文重复渲染
+        if (last && a.start <= last.end) {
+          last.items.push(a);
+          if (a.end > last.end) last.end = a.end;
         } else {
-          span.textContent = text.slice(a.start, a.end);
+          groups.push({ start: a.start, end: a.end, items: [a] });
         }
-        if (a.comment) {
-          var tooltip = el("div", { class: "dms-annot-tooltip" }, [
-            el("span", { style: { fontWeight: "600", color: a.type === "heart" ? "var(--red)" : "var(--blue)" } },
-              [a.type === "heart" ? "\u5fc3" : a.type === "crossout" ? "\u5212" : "\u6279"]),
-            " " + a.comment
-          ]);
+      });
+      var pos = 0;
+      groups.forEach(function (g) {
+        if (g.start > pos) {
+          container.appendChild(document.createTextNode(text.slice(pos, g.start)));
+        }
+        var items = g.items;
+        var hasHeart = items.some(function (x) { return x.type === "heart"; });
+        var hasCross = items.some(function (x) { return x.type === "crossout"; });
+        var hasComment = items.some(function (x) { return x.comment; });
+        var cls = "dms-annot" + (hasHeart ? " dms-annot-heart" : "") + (hasCross ? " dms-annot-crossout" : "") + (hasComment ? " dms-annot-comment" : "");
+        var span = el("span", {
+          class: cls,
+          "data-annot-id": items[0].id,
+          "data-block-id": items[0].blockId || "",
+          "data-marker": (hasHeart ? "\u2665" : "") + (hasCross ? "~" : "") + (hasComment ? "*" : "")
+        });
+        // 合并所有想法到同一个气泡：点批注显示
+        var comments = items.filter(function (x) { return x.comment; });
+        if (comments.length) {
+          var tooltip = el("div", { class: "dms-annot-tooltip" }, comments.map(function (x) {
+            var label = x.type === "heart" ? "\u5fc3" : x.type === "crossout" ? "\u5212" : "\u6279";
+            return el("div", { style: { marginBottom: comments.length > 1 ? "4px" : "0", lineHeight: "1.5" } }, [
+              el("span", { style: { fontWeight: "600", color: x.type === "heart" ? "var(--red)" : "var(--blue)" } }, [label + " "]),
+              x.comment
+            ]);
+          }));
           span.appendChild(tooltip);
         }
+        // 同一段原文只渲染一次；删除线/颜色/边框由组合 class 控制
+        span.textContent = text.slice(g.start, g.end);
         // 手机端无 hover：点击批注显示/隐藏想法气泡
         span.addEventListener("click", function (ev) {
           ev.stopPropagation();
@@ -2270,7 +2289,7 @@
           if (show) setTimeout(function () { tip.classList.remove("dms-annot-tip-show"); }, 3000);
         });
         container.appendChild(span);
-        if (a.end > pos) pos = a.end;
+        if (g.end > pos) pos = g.end;
       });
       if (pos < text.length) {
         container.appendChild(document.createTextNode(text.slice(pos)));
@@ -5361,7 +5380,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.0",
+    version: "2.6.2",
     apps: [
       {
         id: "daily-memory-summary-home",

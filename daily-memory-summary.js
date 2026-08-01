@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.5
+ * 手账日记 (daily-memory-summary) v2.6.7
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -1281,8 +1281,8 @@
       "  word-wrap:break-word;word-break:break-word;",
       "  -webkit-user-select:none;user-select:none;",
       "}",
-      // 编辑区允许选中文字，但手势仍归便签（不抢滚动）
-      "." + ROOT_CLASS + " .dms-sticky [contenteditable]{-webkit-user-select:text;user-select:text;touch-action:none;}",
+      // 编辑区允许选中文字，且不锁定手势（触摸文字按系统默认编辑，不进拖拽）
+      "." + ROOT_CLASS + " .dms-sticky [contenteditable]{-webkit-user-select:text;user-select:text;}",
       "." + ROOT_CLASS + " .dms-sticky.dragging{z-index:20;}",
       "/* 10款内置便签样式 - 每款完全不同的风格 */",
       // 0. 经典便利贴 - 暖黄纸+胶带感
@@ -2597,7 +2597,7 @@
         }, 0);
       }
 
-      // ---- 自由拖拽：按住即可拖动（无需长按进入拖拽模式），长按 500ms 弹操作菜单 ----
+      // ---- 自由拖拽：恢复最初版方案（按住便签非文字区域即拖，文字区保留编辑）----
       var dragInfo = null;
       var longPressTimer = null;
       var longPressStart = null;
@@ -2643,49 +2643,38 @@
         }
         dragInfo = null;
         clearLongPress();
+        sticky._menuShown = false;
       }
 
-      // ---- 触摸拖动：touchstart 立即 preventDefault 锁定手势（默认即拖拽模式）----
-      // 轻点（无位移）在 touchend 手动聚焦编辑区；移动则拖便签，两者互不干扰
+      // ---- 触摸拖动（移动端）：按住便签非文字区域即拖，文字区保留编辑 ----
       sticky.addEventListener("touchstart", function (e) {
-        if (e.target === removeBtn) return;
+        if (e.target === text || e.target === removeBtn) return;
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
-        // 关键：按下即阻止 WebView 把手势判定为滚动/文本选择，保证 touchmove 持续派发
-        e.preventDefault();
         onDragDown(t.clientX, t.clientY);
-      }, { passive: false });
+      }, { passive: true });
       sticky.addEventListener("touchmove", function (e) {
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
-        e.preventDefault();
+        // 进入拖拽后阻止页面滚动，避免便签相对位置漂移
+        if (dragInfo && dragInfo.moved) e.preventDefault();
         onDragMove(t.clientX, t.clientY);
       }, { passive: false });
-      sticky.addEventListener("touchend", function (e) {
-        var wasTap = !!(dragInfo && !dragInfo.moved && !sticky._menuShown);
-        onDragUp();
-        // 轻点（未拖动且未弹菜单）→ 手动聚焦编辑区（touchstart 已 preventDefault，系统不会自动聚焦）
-        if (wasTap && text && !annot.byChar) text.focus();
-        sticky._menuShown = false;
-      });
+      sticky.addEventListener("touchend", onDragUp);
       sticky.addEventListener("touchcancel", onDragUp);
-      // ---- 鼠标拖动：down 时挂到 window，up 时移除，多便签互不干扰 ----
-      function onMouseMove(e) {
-        if (dragInfo && dragInfo.moved) e.preventDefault();
-        onDragMove(e.clientX, e.clientY);
-      }
-      function onMouseUp() {
-        window.removeEventListener("mousemove", onMouseMove);
-        window.removeEventListener("mouseup", onMouseUp);
-        onDragUp();
-      }
-      sticky.addEventListener("mousedown", function (e) {
-        if (e.target === removeBtn) return;
+      // ---- 鼠标拖动（桌面端）：pointer 事件，触摸由 pointerType 分流走 touch ----
+      sticky.addEventListener("pointerdown", function (e) {
+        if (e.target === text || e.target === removeBtn) return;
+        if (e.pointerType === "touch") return; // 触摸走 touch 事件
         if (e.button !== 0) return;
-        window.addEventListener("mousemove", onMouseMove);
-        window.addEventListener("mouseup", onMouseUp);
+        try { sticky.setPointerCapture(e.pointerId); } catch (err) {}
         onDragDown(e.clientX, e.clientY);
       });
+      sticky.addEventListener("pointermove", function (e) {
+        if (dragInfo) onDragMove(e.clientX, e.clientY);
+      });
+      sticky.addEventListener("pointerup", onDragUp);
+      sticky.addEventListener("pointercancel", onDragUp);
       // 右键弹出操作菜单（桌面端）
       sticky.addEventListener("contextmenu", function (e) {
         e.preventDefault();
@@ -5328,7 +5317,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.6",
+    version: "2.6.7",
     apps: [
       {
         id: "daily-memory-summary-home",

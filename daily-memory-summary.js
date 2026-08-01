@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.4
+ * 手账日记 (daily-memory-summary) v2.6.5
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -1276,11 +1276,14 @@
       "." + ROOT_CLASS + " .dms-sticky{",
       "  position:absolute;z-index:5;max-width:180px;min-width:80px;padding:10px 12px;font-size:12px;",
       "  color:var(--ink);box-shadow:2px 3px 8px rgba(74,60,40,0.2);",
-      "  border-radius:2px;cursor:move;line-height:1.5;touch-action:auto;",
+      "  border-radius:2px;cursor:move;line-height:1.5;touch-action:none;",
       "  transform:rotate(-1deg);font-family:'Ma Shan Zheng','KaiTi',cursive;",
       "  word-wrap:break-word;word-break:break-word;",
+      "  -webkit-user-select:none;user-select:none;",
       "}",
-      "." + ROOT_CLASS + " .dms-sticky.dragging{touch-action:none;z-index:20;}",
+      // 编辑区允许选中文字，但手势仍归便签（不抢滚动）
+      "." + ROOT_CLASS + " .dms-sticky [contenteditable]{-webkit-user-select:text;user-select:text;touch-action:none;}",
+      "." + ROOT_CLASS + " .dms-sticky.dragging{z-index:20;}",
       "/* 10款内置便签样式 - 每款完全不同的风格 */",
       // 0. 经典便利贴 - 暖黄纸+胶带感
       "." + ROOT_CLASS + " .dms-sticky.note-0{background:linear-gradient(180deg,#FFE4A0 0%,#FFD478 100%);transform:rotate(-1.5deg);border-radius:2px;border-top:6px solid #E6B655;box-shadow:2px 3px 10px rgba(230,182,85,0.3),inset 0 0 0 1px rgba(255,255,255,0.3);}",
@@ -2651,7 +2654,8 @@
       sticky.addEventListener("touchmove", function (e) {
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
-        if (dragInfo && dragInfo.moved) e.preventDefault();
+        // 一旦手指在便签上移动（无论是否超过阈值）立即锁定手势，防止浏览器滚动/文本选择抢占
+        if (dragInfo) e.preventDefault();
         onDragMove(t.clientX, t.clientY);
       }, { passive: false });
       sticky.addEventListener("touchend", onDragUp);
@@ -5315,7 +5319,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.4",
+    version: "2.6.5",
     apps: [
       {
         id: "daily-memory-summary-home",

@@ -2613,6 +2613,7 @@
           if (dragInfo && dragInfo.moved) { longPressTimer = null; return; }
           longPressTimer = null;
           if (navigator.vibrate) navigator.vibrate(30);
+          sticky._menuShown = true;
           showStickyActionMenu(clientX, clientY);
         }, 500);
       }
@@ -2644,21 +2645,29 @@
         clearLongPress();
       }
 
-      // ---- 触摸拖动（touch 事件；tap 不拦截可编辑文字，移动时才 preventDefault 进入拖拽）----
+      // ---- 触摸拖动：touchstart 立即 preventDefault 锁定手势（默认即拖拽模式）----
+      // 轻点（无位移）在 touchend 手动聚焦编辑区；移动则拖便签，两者互不干扰
       sticky.addEventListener("touchstart", function (e) {
         if (e.target === removeBtn) return;
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
+        // 关键：按下即阻止 WebView 把手势判定为滚动/文本选择，保证 touchmove 持续派发
+        e.preventDefault();
         onDragDown(t.clientX, t.clientY);
       }, { passive: false });
       sticky.addEventListener("touchmove", function (e) {
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
-        // 一旦手指在便签上移动（无论是否超过阈值）立即锁定手势，防止浏览器滚动/文本选择抢占
-        if (dragInfo) e.preventDefault();
+        e.preventDefault();
         onDragMove(t.clientX, t.clientY);
       }, { passive: false });
-      sticky.addEventListener("touchend", onDragUp);
+      sticky.addEventListener("touchend", function (e) {
+        var wasTap = !!(dragInfo && !dragInfo.moved && !sticky._menuShown);
+        onDragUp();
+        // 轻点（未拖动且未弹菜单）→ 手动聚焦编辑区（touchstart 已 preventDefault，系统不会自动聚焦）
+        if (wasTap && text && !annot.byChar) text.focus();
+        sticky._menuShown = false;
+      });
       sticky.addEventListener("touchcancel", onDragUp);
       // ---- 鼠标拖动：down 时挂到 window，up 时移除，多便签互不干扰 ----
       function onMouseMove(e) {
@@ -5319,7 +5328,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.5",
+    version: "2.6.6",
     apps: [
       {
         id: "daily-memory-summary-home",

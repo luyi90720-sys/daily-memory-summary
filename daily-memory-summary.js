@@ -1968,7 +1968,8 @@
         el("div", { style: { display: "flex", gap: "4px" } }, [
           el("button", { class: "dms-tool-btn" + (state.annotMode ? " dms-btn-on" : ""), title: "\u70b9\u4eae\u540e\u70b9\u4e00\u4e0b\u60f3\u6279\u6ce8\u7684\u6bb5\u843d", onclick: function () {
             state.annotMode = !state.annotMode;
-            renderContent();
+            this.classList.toggle("dms-btn-on", state.annotMode);
+            state.annotBtnEl = this;
             toast(state.annotMode ? "\u6279\u6ce8\u6a21\u5f0f\uff1a\u70b9\u4e00\u4e0b\u60f3\u6279\u6ce8\u7684\u6bb5\u843d" : "\u5df2\u9000\u51fa\u6279\u6ce8\u6a21\u5f0f");
           } }, ["\u6279\u6ce8"]),
           el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
@@ -2209,15 +2210,19 @@
         // 手机端：点击段落 = 选中整段弹批注菜单（无需拖选）；批注模式下强制弹，非模式有拖选选区时不打扰
         blockWrap.addEventListener("click", function (e) {
           var sel = window.getSelection();
-          if (!state.annotMode && sel && sel.toString().trim()) return;
+          // 非模式且无菜单打开且有拖选选区时不打扰；菜单已打开时点段落=切换目标
+          if (!state.annotMode && !state.annotMenuEl && sel && sel.toString().trim()) return;
           var pageEl = blockWrap.closest(".dms-diary-page");
           var r = document.createRange();
           r.selectNodeContents(blockText);
           // 把整段设为真实选区：1)让用户看清批注对象 2)避免 touchend 的 checkSelection 误关菜单
           if (sel) { sel.removeAllRanges(); sel.addRange(r); }
           showAnnotMenu(blk.content, r, pageEl);
-          // 批注模式用完自动退出（按钮熄灭）
-          if (state.annotMode) { state.annotMode = false; renderContent(); }
+          // 批注模式用完自动熄灭按钮（不重建页面，避免菜单被 renderContent 清理）
+          if (state.annotMode) {
+            state.annotMode = false;
+            if (state.annotBtnEl) state.annotBtnEl.classList.remove("dms-btn-on");
+          }
         });
         container.appendChild(blockWrap);
         globalPos = blk.end + 1;

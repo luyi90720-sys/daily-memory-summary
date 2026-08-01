@@ -1360,6 +1360,7 @@
       "  display:flex;gap:4px;align-items:center;flex-wrap:wrap;",
       "}",
       "." + ROOT_CLASS + " .dms-annot-menu .dms-tool-btn{font-size:12px;padding:6px 10px;}",
+      "." + ROOT_CLASS + " .dms-btn-on{background:var(--red)!important;color:#FFF8EC!important;border-color:var(--red)!important;}",
       "." + ROOT_CLASS + " .dms-annot-input{",
       "  width:100%;margin-top:6px;padding:6px 8px;font-size:12px;font-family:inherit;",
       "  border:1px solid var(--line);border-radius:var(--radius-sm);background:var(--paper-2);color:var(--ink);outline:none;",
@@ -1477,6 +1478,7 @@
       currentDiary: null,
       diaryKey: "",
       annotMenuEl: null,
+      annotMode: false,     // 批注模式：点亮后点段落即可批注
       settingsOpen: false,
       stickerLib: null,
       stickerPickerOpen: false,
@@ -1964,7 +1966,11 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
-          el("button", { class: "dms-tool-btn", title: "\u70b9\u51fb TA \u65e5\u8bb0\u91cc\u7684\u6bb5\u843d\u5373\u53ef\u6279\u6ce8", onclick: function () { toast("\u70b9\u4e00\u4e0b TA \u65e5\u8bb0\u91cc\u7684\u6bb5\u843d\uff0c\u5c31\u53ef\u4ee5\u6279\u6ce8/\u5212\u6389/\u8868\u767d"); } }, ["\u6279\u6ce8"]),
+          el("button", { class: "dms-tool-btn" + (state.annotMode ? " dms-btn-on" : ""), title: "\u70b9\u4eae\u540e\u70b9\u4e00\u4e0b\u60f3\u6279\u6ce8\u7684\u6bb5\u843d", onclick: function () {
+            state.annotMode = !state.annotMode;
+            renderContent();
+            toast(state.annotMode ? "\u6279\u6ce8\u6a21\u5f0f\uff1a\u70b9\u4e00\u4e0b\u60f3\u6279\u6ce8\u7684\u6bb5\u843d" : "\u5df2\u9000\u51fa\u6279\u6ce8\u6a21\u5f0f");
+          } }, ["\u6279\u6ce8"]),
           el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
           el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"])
         ])
@@ -2200,14 +2206,18 @@
           return Object.assign({}, a, { start: localStart, end: localStart + a.selectedText.length });
         }));
         blockWrap.appendChild(blockText);
-        // 手机端：点击段落 = 选中整段弹批注菜单（无需拖选）；已有拖选选区时不打扰
+        // 手机端：点击段落 = 选中整段弹批注菜单（无需拖选）；批注模式下强制弹，非模式有拖选选区时不打扰
         blockWrap.addEventListener("click", function (e) {
           var sel = window.getSelection();
-          if (sel && sel.toString().trim()) return;
+          if (!state.annotMode && sel && sel.toString().trim()) return;
           var pageEl = blockWrap.closest(".dms-diary-page");
           var r = document.createRange();
           r.selectNodeContents(blockText);
+          // 把整段设为真实选区：1)让用户看清批注对象 2)避免 touchend 的 checkSelection 误关菜单
+          if (sel) { sel.removeAllRanges(); sel.addRange(r); }
           showAnnotMenu(blk.content, r, pageEl);
+          // 批注模式用完自动退出（按钮熄灭）
+          if (state.annotMode) { state.annotMode = false; renderContent(); }
         });
         container.appendChild(blockWrap);
         globalPos = blk.end + 1;
@@ -2259,11 +2269,11 @@
     function setupTextSelection(textEl, pageEl) {
       function checkSelection() {
         var sel = window.getSelection();
-        if (!sel || sel.rangeCount === 0) { hideAnnotMenu(); return; }
+        if (!sel || sel.rangeCount === 0) return;
         var selectedText = sel.toString().trim();
-        if (selectedText.length < 1) { hideAnnotMenu(); return; }
+        if (selectedText.length < 1) return;
         var range = sel.getRangeAt(0);
-        if (!textEl.contains(range.commonAncestorContainer)) { hideAnnotMenu(); return; }
+        if (!textEl.contains(range.commonAncestorContainer)) return;
         showAnnotMenu(selectedText, range, pageEl);
       }
       textEl.addEventListener("mouseup", function () { setTimeout(checkSelection, 10); });
@@ -2349,6 +2359,8 @@
 
     function closeAnnotOnOutside(e) {
       if (state.annotMenuEl && !state.annotMenuEl.contains(e.target)) {
+        // 点击日记正文段落不关闭（可能是切换批注目标），由段落 click 重新弹菜单
+        if (e.target && e.target.closest && e.target.closest(".dms-diary-text")) return;
         hideAnnotMenu();
       }
     }

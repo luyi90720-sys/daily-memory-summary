@@ -1,7 +1,7 @@
 {
   "id": "daily-memory-summary",
   "name": "手账日记",
-  "version": "2.7.12",
+  "version": "2.7.13",
   "description": "手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签（10款内置样式+自定义CSS），思维链/格式多预设，可同步到事实/短期记忆。",
   "author": "Roche Plugin",
   "entry": "https://raw.githubusercontent.com/luyi90720-sys/daily-memory-summary/main/daily-memory-summary.js",

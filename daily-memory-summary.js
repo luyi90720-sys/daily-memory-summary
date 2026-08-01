@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.7.3
+ * 手账日记 (daily-memory-summary) v2.7.11
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -40,6 +40,7 @@
   var DEFAULT_SETTINGS = {
     showFacts: false,
     showCore: false,
+    factInjectCount: 5,        // 事实记忆注入篇数（0 = 全部注入）
     useWorldbook: false,
     worldbookCategories: [],
     worldbookEntries: [],
@@ -231,6 +232,19 @@
   }
   function coreToText(core) { return core ? (core.summary || core.summaryText || core.text || "") : ""; }
 
+  /* 取最近 N 篇事实记忆（按 when/createdAt 排序，新到旧；n<=0 表示全部） */
+  function takeLatestFacts(facts, n) {
+    var arr = (facts || []).slice();
+    if (!n || n <= 0 || arr.length <= n) return arr;
+    arr.sort(function (a, b) {
+      var wa = a.when || a.date || a.dateKey || a.createdAt || "";
+      var wb = b.when || b.date || b.dateKey || b.createdAt || "";
+      if (wa === wb) return 0;
+      return wa > wb ? -1 : 1;
+    });
+    return arr.slice(0, n);
+  }
+
   /* ---------- 上下文拼装 ---------- */
   function buildCtx(roche, state, day) {
     var conv = state.selectedConv;
@@ -264,21 +278,39 @@
           var memP;
           if (state.settings.showCore || state.settings.showFacts) {
             memP = loadLong(roche, cid).then(function (lt) {
-              return { core: state.settings.showCore ? coreToText(lt.core) : "", facts: state.settings.showFacts ? factsToText(lt.facts) : "" };
+              return {
+                core: state.settings.showCore ? coreToText(lt.core) : "",
+                facts: state.settings.showFacts ? factsToText(takeLatestFacts(lt.facts, state.settings.factInjectCount)) : ""
+              };
             });
           } else { memP = Promise.resolve({ core: "", facts: "" }); }
+          // 当前会话挂载的表情包说明列表（供 AI 选择贴哪个表情包，避免瞎猜导致前端匹配不到）
+          var stickerP = getStickerLib(roche).then(function (lib) {
+            var stickers = getStickersForConv(lib, cid);
+            var caps = [];
+            (stickers || []).forEach(function (s) {
+              var c = (s.caption || "").trim();
+              if (c && caps.indexOf(c) < 0) caps.push(c);
+            });
+            return caps;
+          });
 
           return memP.then(function (mem) {
             var wbP = state.settings.useWorldbook ? loadWbText(roche, state.settings) : Promise.resolve("");
             return wbP.then(function (wb) {
-              return {
+              var ctx = {
                 conversationId: cid, isGroup: info.isGroup,
                 userName: uName, userPersona: uPersona,
                 charName: ch.name, charText: ch.text,
                 dayShort: dayMsgs, shortText: shortT,
                 coreText: mem.core, factsText: mem.facts,
-                wbText: wb, dateKey: toDateKey(day)
+                wbText: wb, dateKey: toDateKey(day),
+                stickerCaptions: []
               };
+              return Promise.resolve(stickerP).then(function (caps) {
+                ctx.stickerCaptions = caps || [];
+                return ctx;
+              });
             });
           });
         });
@@ -310,8 +342,18 @@
     if (chain.trim()) sys.push("\u3010\u601d\u7ef4\u94fe\u3011\n" + chain);
 
     var fmt = fillTemplate(settings.charFormat, ctx);
+    // 可用表情包说明列表（挂载到当前会话的），AI 只能从中选择，避免生成前端匹配不到的说明
+    var capText = "";
+    if (ctx.stickerCaptions && ctx.stickerCaptions.length) {
+      capText = "\n\u4f60\u53ef\u4ee5\u5728\u65e5\u8bb0\u6b63\u6587\u4e2d\u8d34\u8868\u60c5\u5305\uff0c\u7528\u683c\u5f0f\u3010\u8868\u60c5\u5305\uff1a\u8868\u60c5\u5305\u7684\u8bf4\u660e\u3011\uff0c\u63d2\u5165\u5728\u60f3\u8868\u8fbe\u60c5\u7eea\u7684\u4f4d\u7f6e\u3002\u53ef\u7528\u7684\u8868\u60c5\u5305\u8bf4\u660e\u5982\u4e0b\uff0c\u5fc5\u987b\u4ece\u4e2d\u9009\u62e9\u4e00\u4e2a\uff0c\u4e0d\u8981\u81ea\u521b\uff1a\n" +
+        ctx.stickerCaptions.map(function (c) { return "\u3010" + c + "\u3011"; }).join(" ") +
+        "\n\uff08\u53ef\u9009\u5730\u8d34 0~3 \u4e2a\uff0c\u4e0d\u8981\u592a\u591a\uff09";
+    } else {
+      capText = "\n\uff08\u5f53\u524d\u4f1a\u8bdd\u672a\u6302\u8f7d\u8868\u60c5\u5305\uff0c\u65e0\u9700\u8d34\u8868\u60c5\u5305\uff09";
+    }
     var userMsg = (fmt.trim() ? fmt : "\u8bf7\u76f4\u63a5\u4ee5 {{char}} \u7684\u7b2c\u4e00\u4eba\u5199\u65e5\u8bb0\u3002") +
-      "\n\n\u7ea6\u675f\uff1a\u4e0d\u634f\u9020\u7528\u6237\u672a\u8f93\u5165\u7684\u8a00\u884c\uff0c\u4e0d\u62a2\u8bdd\u7528\u6237\uff0c\u8f93\u51fa\u8bed\u8a00\u4e0e\u804a\u5929\u8bb0\u5f55\u4e00\u81f4\u3002";
+      "\n\n\u7ea6\u675f\uff1a\u4e0d\u634f\u9020\u7528\u6237\u672a\u8f93\u5165\u7684\u8a00\u884c\uff0c\u4e0d\u62a2\u8bdd\u7528\u6237\uff0c\u8f93\u51fa\u8bed\u8a00\u4e0e\u804a\u5929\u8bb0\u5f55\u4e00\u81f4\u3002" +
+      capText;
     return [{ role: "system", content: sys.join("\n\n") }, { role: "user", content: userMsg }];
   }
 
@@ -1999,6 +2041,7 @@
       var charTextEl = el("div", { class: "dms-diary-text", id: "charDiaryText" });
       renderAnnotatedText(charTextEl, diary.charDiary || "", diary.annotations || []);
       charBody.appendChild(charTextEl);
+      hydrateStickerMarks(charTextEl, diary.conversationId, charPage);
 
       (diary.annotations || []).filter(function (a) { return a.type === "sticky"; }).forEach(function (a) {
         charBody.appendChild(makeStickyNote(a, charPage));
@@ -2042,6 +2085,7 @@
         userTextEl.style.display = "none";
       }
       userBody.appendChild(userTextEl);
+      hydrateStickerMarks(userTextEl, diary.conversationId, userPage, "charStickers");
       // 允许 user 在自己的日记上选文字（供 char 批注使用，或 user 自己标记）
       setupTextSelection(userTextEl, userPage);
 
@@ -2199,6 +2243,109 @@
     }
 
     /* ---------- 批注渲染（按段落） ---------- */
+    // 计算某段落末尾附近的贴纸位置（相对 page-body），DOM 需已挂载
+    // count: 同一段落第几张贴纸（从 0 起），多张时依次向左排开、向下微降，避免挤到一起
+    function snapPosToBlock(pageEl, blockId, w, h, jitter, count) {
+      var body = pageEl ? pageEl.querySelector(".dms-page-body") : null;
+      if (!body || !blockId) return null;
+      var block = body.querySelector('.dms-block[data-block-id="' + blockId + '"]');
+      if (!block) return null;
+      var br = body.getBoundingClientRect();
+      var r = block.getBoundingClientRect();
+      var j = jitter || 12;
+      var n = count || 0;
+      return {
+        x: Math.max(0, (r.left - br.left) + r.width - w - 6 - n * (w + 10) + Math.random() * j),
+        y: Math.max(0, (r.bottom - br.top) + Math.random() * j - 20 + n * 12)
+      };
+    }
+    // 把日记正文中的表情包标记提取为页面贴纸（像 user 贴的表情包一样独立渲染）
+    // 兼容两种写法：①【表情包：说明】②直接【说明】（说明与挂载库 caption 匹配即渲染）
+    // storeKey: "stickers"=char 页（左页） | "charStickers"=user 页（右页），避免串页
+    function hydrateStickerMarks(container, cid, pageEl, storeKey) {
+      if (!container) return;
+      getStickerLib(roche).then(function (lib) {
+        // 需要页面 body 才能承载贴纸；此时 DOM 已构建完成，若仍无 body 则保留标记原文不处理
+        var body = pageEl ? pageEl.querySelector(".dms-page-body") : null;
+        if (!body) return;
+        state.stickerLib = lib;
+        var stickers = cid ? getStickersForConv(lib, cid) : [];
+        if (!stickers.length) return;
+        var walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+        var nodes = [];
+        while (walker.nextNode()) nodes.push(walker.currentNode);
+        var added = [];
+        // 同一段落多张表情包时依次排开，避免挤到一起
+        var blockCounts = {};
+        nodes.forEach(function (node) {
+          var text = node.nodeValue || "";
+          if (text.indexOf("\u3010") < 0) return;
+          var re = /\u3010([^\u3011]+)\u3011/g;
+          var frag = document.createDocumentFragment();
+          var last = 0, m;
+          while ((m = re.exec(text)) !== null) {
+            if (m.index > last) frag.appendChild(document.createTextNode(text.slice(last, m.index)));
+            // 去掉「表情包：」前缀（兼容两种写法）
+            var raw = (m[1] || "").trim();
+            var cap = raw.replace(/^\u8868\u60c5\u5305[\uff1a:]\s*/, "").trim();
+            var hit = null;
+            for (var i = 0; i < stickers.length; i++) {
+              var sc = (stickers[i].caption || "").trim();
+              if (sc === cap || (sc && (sc.indexOf(cap) >= 0 || cap.indexOf(sc) >= 0))) { hit = stickers[i]; break; }
+            }
+            if (hit) {
+              // 去重：同款表情包已贴过则不再重复添加
+              var store = (state.currentDiary && state.currentDiary[storeKey]) || [];
+              var existing = store.filter(function (s) {
+                return s.byChar && (s.caption || "") === (hit.caption || "");
+              })[0];
+              if (!existing && state.currentDiary) {
+                if (!state.currentDiary[storeKey]) state.currentDiary[storeKey] = [];
+                // 定位到该标记所在段落的末尾附近（找不到段落则按序号分散摆放）
+                var blkEl = node.parentNode && node.parentNode.closest ? node.parentNode.closest(".dms-block") : null;
+                var blkId = blkEl ? (blkEl.getAttribute("data-block-id") || null) : null;
+                if (blkId && !blockCounts[blkId]) blockCounts[blkId] = 0;
+                var pos = snapPosToBlock(pageEl, blkId, 64, 64, 14, blkId ? blockCounts[blkId] : 0);
+                if (blkId) blockCounts[blkId]++;
+                if (!pos) {
+                  var rowIdx = added.length % 3;
+                  var colIdx = Math.floor(added.length / 3);
+                  pos = { x: 20 + colIdx * 130 + Math.random() * 40, y: 50 + rowIdx * 120 + Math.random() * 40 };
+                }
+                var placed = {
+                  id: "charStk" + Date.now() + "_" + Math.random().toString(36).slice(2, 6),
+                  url: hit.url,
+                  caption: hit.caption || cap,
+                  x: pos.x,
+                  y: pos.y,
+                  size: 64,
+                  blockId: blkId,
+                  _snapped: true,   // 提取时已定位，渲染不再二次吸附
+                  byChar: true,
+                  createdAt: Date.now()
+                };
+                state.currentDiary[storeKey].push(placed);
+                added.push(placed);
+              }
+              // 标记位置留空格，避免文字粘连（批注气泡内的标记同样被提取，气泡只留文本）
+              frag.appendChild(document.createTextNode(" "));
+            } else {
+              // 未匹配到：保留原文
+              frag.appendChild(document.createTextNode(m[0]));
+            }
+            last = m.index + m[0].length;
+          }
+          if (last < text.length) frag.appendChild(document.createTextNode(text.slice(last)));
+          if (node.parentNode) node.parentNode.replaceChild(frag, node);
+        });
+        // 把提取出的表情包渲染为页面贴纸（像 user 贴的一样），并保存
+        if (added.length) {
+          added.forEach(function (s) { body.appendChild(makeSticker(s, pageEl)); });
+          saveCurrentDiary();
+        }
+      });
+    }
+
     function renderAnnotatedText(container, text, annotations) {
       container.innerHTML = "";
       if (!text) {
@@ -2523,6 +2670,18 @@
       }
 
       var sticky = el("div", { class: stickyClass, style: stickyStyle });
+      // 若带段落关联且未被 user 手动拖过，吸附到该段落末尾附近（延迟到 DOM 挂载后再算位置）
+      if (annot.blockId && !annot._moved) {
+        setTimeout(function () {
+          if (!sticky.isConnected) return;
+          var sp = snapPosToBlock(pageEl, annot.blockId, sticky.offsetWidth || 120, sticky.offsetHeight || 80, 16);
+          if (sp) {
+            annot.x = sp.x; annot.y = sp.y;
+            sticky.style.left = sp.x + "px";
+            sticky.style.top = sp.y + "px";
+          }
+        }, 0);
+      }
       var text = el("div", { contentEditable: annot.byChar ? "false" : "true", style: { outline: "none", minHeight: "20px" } }, [annot.comment || (annot.byChar ? "" : "\u53cc\u51fb\u7f16\u8f91\u2026")]);
       if (!annot.byChar) {
         text.addEventListener("blur", function () {
@@ -2662,6 +2821,7 @@
       }
       function onDragUp() {
         if (dragInfo && dragInfo.moved) {
+          annot._moved = true;  // 用户手动拖过，之后不再吸附回段落末尾
           updateBlockIdByPosition();
           saveCurrentDiary();
           sticky.classList.remove("dragging");
@@ -2914,23 +3074,32 @@
       });
       var img = el("img", { src: s.url, alt: s.caption || "", style: { width: "100%", height: "100%" } });
       sticker.appendChild(img);
+      // 若带段落关联、未被 user 手动拖过、且非提取时已定位，吸附到该段落末尾附近（延迟到 DOM 挂载后再算位置）
+      if (s.blockId && !s._moved && !s._snapped) {
+        setTimeout(function () {
+          if (!sticker.isConnected) return;
+          var sp = snapPosToBlock(pageEl, s.blockId, sticker.offsetWidth || size, sticker.offsetHeight || size, 14);
+          if (sp) {
+            s.x = sp.x; s.y = sp.y;
+            sticker.style.left = sp.x + "px";
+            sticker.style.top = sp.y + "px";
+          }
+        }, 0);
+      }
       if (s.caption) {
         sticker.appendChild(el("div", { class: "dms-sticker-cap" }, [s.caption]));
-      }
-      // 块标记小角标
-      if (s.blockId) {
-        sticker.appendChild(el("div", {
-          class: "dms-sticker-blocktag",
-          title: "\u6240\u5c5e\u5757: " + s.blockId,
-          style: { position: "absolute", top: "-2px", left: "-2px", fontSize: "8px", color: "#FAF3E3", background: "var(--blue)", borderRadius: "3px", padding: "0 3px" }
-        }, [s.blockId]));
       }
       var delBtn = el("button", { class: "dms-sticker-del", onclick: function (ev) {
         ev.stopPropagation();
         if (!state.currentDiary) return;
+        // 兼容 stickers 与 charStickers 两种存储
         var arr = state.currentDiary.stickers || [];
         var i = arr.indexOf(s);
         if (i >= 0) { arr.splice(i, 1); state.currentDiary.stickers = arr; }
+        else if (state.currentDiary.charStickers) {
+          var j = state.currentDiary.charStickers.indexOf(s);
+          if (j >= 0) state.currentDiary.charStickers.splice(j, 1);
+        }
         saveCurrentDiary();
         sticker.remove();
       } }, ["\u00d7"]);
@@ -3052,6 +3221,7 @@
       }
       function onDragUp() {
         if (dragInfo && dragInfo.moved) {
+          s._moved = true;  // 用户手动拖过，之后不再吸附回段落末尾
           updateStickerBlockIdByPosition();
           saveCurrentDiary();
           sticker.classList.remove("dragging");
@@ -3466,6 +3636,23 @@
       sec1.appendChild(makeSwitch("\u6ce8\u5165\u4e8b\u5b9e\u8bb0\u5fc6", "\u4f5c\u4e3a\u53c2\u8003\u6ce8\u5165\u7ed9AI", state.settings.showFacts, function (v) {
         state.settings.showFacts = v; saveSettings(roche, state.settings);
       }));
+      if (state.settings.showFacts) {
+        var factRow = el("div", { style: { display: "flex", alignItems: "center", gap: "8px", paddingLeft: "16px", marginTop: "6px" } }, [
+          el("div", { style: { flex: "1", fontSize: "12px", color: "var(--ink)" } }, ["\u6ce8\u5165\u8fd1\u671f\u51e0\u7bc7\u4e8b\u5b9e\u8bb0\u5fc6\uff1a"]),
+          el("input", {
+            type: "number", min: "0", max: "50", class: "dms-input",
+            style: { width: "64px", textAlign: "center" },
+            value: state.settings.factInjectCount || 0
+          })
+        ]);
+        var fcInput = factRow.querySelector("input");
+        fcInput.addEventListener("change", function () {
+          state.settings.factInjectCount = Math.max(0, Math.min(50, Math.floor(Number(this.value) || 0)));
+          saveSettings(roche, state.settings); toast("\u5df2\u4fdd\u5b58\uff080=\u5168\u90e8\u6ce8\u5165\uff09");
+        });
+        factRow.appendChild(el("div", { class: "dms-hint", style: { fontSize: "11px", color: "var(--ink-mute)", whiteSpace: "nowrap" } }, ["0=\u5168\u90e8"]));
+        sec1.appendChild(factRow);
+      }
       sec1.appendChild(makeSwitch("\u542f\u7528\u4e16\u754c\u4e66", "\u52fe\u9009\u540e\u53ef\u6311\u9009\u5206\u7c7b/\u8bcd\u6761", state.settings.useWorldbook, function (v) {
         state.settings.useWorldbook = v; saveSettings(roche, state.settings);
         if (v && !state.worldbookTree.length) { loadWbTree(roche).then(function (t) { state.worldbookTree = t; toggleSettings(true); renderContent(); }); }
@@ -4168,7 +4355,9 @@
           el("button", { class: "dms-tool-btn", onclick: function () { state.view = "periodDialog"; renderContent(); } }, ["\u8fd4\u56de"])
         ])
       ]));
-      card.appendChild(el("div", { class: "dms-diary-text", style: { marginTop: "10px" } }, [d.charDiary || ""]));
+      var diaryTextEl = el("div", { class: "dms-diary-text", style: { marginTop: "10px" } }, [d.charDiary || ""]);
+      card.appendChild(diaryTextEl);
+      hydrateStickerMarks(diaryTextEl, d.conversationId);
 
       // 显示数据源
       if (d.source === "daily" && d.sourceDiaries && d.sourceDiaries.length) {
@@ -4705,11 +4894,13 @@
           : generateCharDiary(roche, ctx, state.settings);
 
         return genP.then(function (result) {
-          // 兼容：交换模式返回 { diary, charAnnotations }，非交换模式返回 text
+          // 兼容：交换模式返回 { diary, charAnnotations, charStickers }，非交换模式返回 text
           var diaryText = (typeof result === "string") ? result : (result.diary || "");
           var newCharAnnots = (typeof result === "object" && result.charAnnotations) ? result.charAnnotations : [];
+          var newCharStickers = (typeof result === "object" && result.charStickers) ? result.charStickers : [];
           // 合并：交换模式下用新生成的 charAnnotations 覆盖旧的（批注+便签一起重新生成）
           var charAnnots = userDiaryText.trim() ? newCharAnnots : ((existing && existing.charAnnotations) || []);
+          var charStickers = userDiaryText.trim() ? newCharStickers : ((existing && existing.charStickers) || []);
           var diaryData = {
             conversationId: ctx.conversationId,
             charName: ctx.charName,
@@ -4723,6 +4914,7 @@
             annotations: (existing && existing.annotations) || [],
             stickers: (existing && existing.stickers) || [],
             charAnnotations: charAnnots,
+            charStickers: charStickers,
             ctx: ctx,
             createdAt: (existing && existing.createdAt) || (state.currentDiary && state.currentDiary.createdAt) || Date.now(),
             updatedAt: Date.now()
@@ -4754,11 +4946,20 @@
       var msgs = buildCharDiaryMessages(ctx, settings);
       // 在最后追加 user 的日记作为参考
       msgs.push({ role: "assistant", content: "\u3010" + (ctx.userName || "\u7528\u6237") + "\u521a\u5199\u7684\u65e5\u8bb0\u3011\n" + userDiaryText + "\n\n\u8bf7\u5728\u4f60\u7684\u65e5\u8bb0\u4e2d\u56de\u5e94\u5bf9\u8bdd TA \u7684\u65e5\u8bb0\u3002" });
+      var capText = "";
+      if (ctx.stickerCaptions && ctx.stickerCaptions.length) {
+        capText = "\u4f60\u8fd8\u53ef\u4ee5\u5728\u65e5\u8bb0\u6b63\u6587\u4e2d\u8d34\u8868\u60c5\u5305\uff0c\u7528\u683c\u5f0f\u3010\u8868\u60c5\u5305\uff1a\u8868\u60c5\u5305\u7684\u8bf4\u660e\u3011\uff0c\u63d2\u5165\u5728\u60f3\u8868\u8fbe\u60c5\u7eea\u7684\u4f4d\u7f6e\u3002\u53ef\u7528\u7684\u8868\u60c5\u5305\u8bf4\u660e\u5fc5\u987b\u4ece\u4e0b\u5217\u9009\u62e9\uff0c\u4e0d\u8981\u81ea\u521b\uff1a\n" +
+          ctx.stickerCaptions.map(function (c) { return "\u3010" + c + "\u3011"; }).join(" ") +
+          "\n\uff08\u53ef\u9009\u5730\u8d34 0~3 \u4e2a\uff09\n\n";
+      } else {
+        capText = "\uff08\u5f53\u524d\u4f1a\u8bdd\u672a\u6302\u8f7d\u8868\u60c5\u5305\uff0c\u65e0\u9700\u8d34\u8868\u60c5\u5305\uff09\n\n";
+      }
       msgs.push({ role: "user", content:
         "\u73b0\u5728\u8bf7\u4f60\u540c\u65f6\u5b8c\u6210\u4e09\u4ef6\u4e8b\uff1a\n\n" +
         "1. \u5199\u4f60\u7684\u65e5\u8bb0\uff08\u4ee5\u4f60\u81ea\u5df1\u7684\u53e3\u543b\u56de\u5e94 TA \u7684\u65e5\u8bb0\uff09\n" +
         "2. \u4f5c\u4e3a " + (ctx.charName || "\u89d2\u8272") + "\uff0c\u5728 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u4e0a\u505a\u6587\u5b57\u6279\u6ce8\uff08\u5212\u6389/\u8868\u767d/\u6279\u6ce8\uff09\n" +
         "3. \u7ed9 " + (ctx.userName || "\u7528\u6237") + " \u7684\u65e5\u8bb0\u8d34 4~6 \u5f20\u4fbf\u7b7e\n\n" +
+        capText +
         "\u4e25\u683c\u6309\u4ee5\u4e0b\u683c\u5f0f\u8f93\u51fa\uff08\u4e0d\u8981\u8f93\u51fa\u5176\u4ed6\u5185\u5bb9\uff09\uff1a\n" +
         "\u3010\u65e5\u8bb0\u5f00\u59cb\u3011\n\u4f60\u7684\u65e5\u8bb0\u6b63\u6587\u2026\n\u3010\u65e5\u8bb0\u7ed3\u675f\u3011\n\n" +
         "\u3010\u6279\u6ce8\u5f00\u59cb\u3011\n" +
@@ -4821,16 +5022,51 @@
             createdAt: Date.now()
           });
         });
-        return { diary: parsed.diary, charAnnotations: charAnnots };
+        return getStickerLib(roche).then(function (lib) {
+          // 便签区块里隔离出的表情包说明 → char 给 user 贴的表情包（从挂载库匹配图片）
+          var charStickers = [];
+          var mounted = (ctx && ctx.conversationId) ? getStickersForConv(lib, ctx.conversationId) : [];
+          parsed.stickerNotes.forEach(function (cap, idx) {
+            var hit = null;
+            for (var i = 0; i < mounted.length; i++) {
+              var sc = (mounted[i].caption || "").trim();
+              if (sc === cap || (sc && (sc.indexOf(cap) >= 0 || cap.indexOf(sc) >= 0))) { hit = mounted[i]; break; }
+            }
+            if (hit) {
+              // 与便签一致：循环分配到各段落，渲染时吸附到对应段落末尾附近
+              var stkBlockId = null;
+              if (userBlocks.length) stkBlockId = userBlocks[idx % userBlocks.length].id;
+              charStickers.push({
+                id: "charStk" + Date.now() + "_" + idx,
+                url: hit.url,
+                caption: hit.caption || cap,
+                x: 20 + (idx * 70) + Math.random() * 40,
+                y: 80 + (idx * 90) + Math.random() * 40,
+                size: 64,
+                blockId: stkBlockId,
+                byChar: true,
+                createdAt: Date.now()
+              });
+            }
+          });
+          return { diary: parsed.diary, charAnnotations: charAnnots, charStickers: charStickers };
+        });
       });
     }
 
-    /* ---------- 解析 char 输出：分离日记、批注、便签 ---------- */
+    /* ---------- 解析 char 输出：分离日记、批注、便签、表情包 ----------
+     * 格式约定（避免与便签混淆）：
+     *   - 表情包：只写在日记正文里，内嵌标记【表情包：说明】（说明必须取自挂载库列表）
+     *   - 便签：独立区块【便签开始】...【便签结束】，每行一条
+     * 兜底：便签区块里若混入【表情包：说明】行，自动识别为表情包而非便签
+     */
     function parseCharDiaryAndStickyNotes(text) {
-      if (!text) return { diary: "", annotations: [], stickyNotes: [] };
+      if (!text) return { diary: "", annotations: [], stickyNotes: [], stickerNotes: [] };
       var diary = "";
       var annotations = [];
       var stickyNotes = [];
+      var stickerNotes = [];
+      var STICKER_MARK_RE = /\u3010\u8868\u60c5\u5305\uff1a([^\u3011]+)\u3011/g;
 
       // 提取日记
       var diaryRe = /\u3010\u65e5\u8bb0\u5f00\u59cb\u3011([\s\S]*?)\u3010\u65e5\u8bb0\u7ed3\u675f\u3011/g;
@@ -4856,25 +5092,34 @@
           ["comment", "heart", "crossout"].indexOf(a.type) >= 0;
       });
 
-      // 提取便签
+      // 提取便签；【表情包：xx】行不当作便签，归入 stickerNotes
       var stickyRe = /\u3010\u4fbf\u7b7e\u5f00\u59cb\u3011([\s\S]*?)\u3010\u4fbf\u7b7e\u7ed3\u675f\u3011/g;
       var sm;
       while ((sm = stickyRe.exec(text)) !== null) {
         var content = sm[1].trim();
         content.split("\n").forEach(function (line) {
           line = line.trim();
-          if (line) stickyNotes.push(line);
+          if (!line) return;
+          var smk = line.match(/^\u3010\u8868\u60c5\u5305\uff1a([^\u3011]+)\u3011$/);
+          if (smk) {
+            var c = smk[1].trim();
+            if (c) stickerNotes.push(c);
+            return;
+          }
+          stickyNotes.push(line);
         });
       }
 
-      // 如果没有任何标记，尝试旧格式（【便签】行）
+      // 旧格式（【便签】行）同样隔离表情包
       if (!diary && !annotations.length && !stickyNotes.length) {
         var lines = text.split("\n");
         var diaryLines = [];
         lines.forEach(function (line) {
           var sm2 = line.match(/^\u3010\u4fbf\u7b7e\u3011\s*(.*)$/);
           if (sm2) {
-            if (sm2[1].trim()) stickyNotes.push(sm2[1].trim());
+            var smk2 = sm2[1].match(/^\u3010\u8868\u60c5\u5305\uff1a([^\u3011]+)\u3011$/);
+            if (smk2 && smk2[1].trim()) stickerNotes.push(smk2[1].trim());
+            else if (sm2[1].trim()) stickyNotes.push(sm2[1].trim());
           } else {
             diaryLines.push(line);
           }
@@ -4885,7 +5130,8 @@
 
       if (stickyNotes.length > 6) stickyNotes = stickyNotes.slice(0, 6);
       if (annotations.length > 6) annotations = annotations.slice(0, 6);
-      return { diary: diary, annotations: annotations, stickyNotes: stickyNotes };
+      if (stickerNotes.length > 3) stickerNotes = stickerNotes.slice(0, 3);
+      return { diary: diary, annotations: annotations, stickyNotes: stickyNotes, stickerNotes: stickerNotes };
     }
 
     /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为系统消息注入主聊天 ---------- */
@@ -5100,6 +5346,7 @@
         generateCharDiaryWithUserRef(roche, ctx, state.settings, userText).then(function (result) {
           state.currentDiary.charDiary = result.diary || "";
           state.currentDiary.charAnnotations = result.charAnnotations || [];
+          if (result.charStickers) state.currentDiary.charStickers = result.charStickers;
           state.currentDiary.updatedAt = Date.now();
           return saveCurrentDiary().then(function () {
             var annotCount = (result.charAnnotations || []).filter(function (a) { return a.selectedText; }).length;
@@ -5168,7 +5415,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.7.3",
+    version: "2.7.11",
     apps: [
       {
         id: "daily-memory-summary-home",

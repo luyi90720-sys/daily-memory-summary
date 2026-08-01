@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.7.0
+ * 手账日记 (daily-memory-summary) v2.7.1
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -1492,8 +1492,7 @@
       undoStack: [],        // 撤销栈：批注/便签/表情修改前的快照
       settingsOpen: false,
       stickerLib: null,
-      stickerPickerOpen: false,
-      syncDialogShown: false
+      stickerPickerOpen: false
     };
 
     /* 10款内置便签样式配置 - 每款完全不同的风格（提前定义，供 buildSettingsPanel 等同步调用使用） */
@@ -2098,6 +2097,20 @@
           });
         } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"])
       ];
+      // 非交换模式：用户生成后可自行选择同步到短期记忆
+      if (!state.settings.swapMode) {
+        actionBtns.push(el("button", { class: "dms-btn dms-btn-sm", onclick: function () {
+          if (!state.currentDiary) return;
+          var ctx = state.currentDiary.ctx || {};
+          roche.ui.confirm({ title: "\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6", message: "\u628a\u4eca\u5929\u7684\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u4e3b\u804a\u5929\uff0c\u4e0b\u6b21\u5bf9\u8bdd AI \u4f1a\u201c\u8bb0\u5f97\u201d\u4eca\u5929\u3002\u662f\u5426\u7ee7\u7eed\uff1f" }).then(function (ok) {
+            if (!ok) return;
+            toast("\u6b63\u5728\u6ce8\u5165\u2026");
+            return syncShortTerm(roche, ctx, state.currentDiary).then(function () {
+              toast("\u5df2\u6ce8\u5165\u5230\u4e3b\u804a\u5929");
+            }).catch(function () { toast("\u6ce8\u5165\u5931\u8d25"); });
+          });
+        } }, ["\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6"]));
+      }
 
       // 交换模式 charDiary：额外按钮
       if (state.settings.swapMode && state.subView === "charDiary") {
@@ -4628,7 +4641,6 @@
       var cid = conv.conversationId || conv.id;
       state.diaryKey = cid + ":" + toDateKey(state.selectedDate);
       state.lastError = "";
-      state.syncDialogShown = false;
 
       // 根据 swapMode 决定 diaryMode：交换日记 vs char独自日记
       // 这决定使用哪个存储，彻底分开两种数据
@@ -4748,14 +4760,12 @@
             // 设置子视图
             if (state.settings.swapMode) state.subView = "charDiary";
             else state.subView = null;
-            // 弹同步选项对话框
-            return showSyncOptionsDialog(ctx, diaryText || "").then(function () {
-              state.generating = false;
-              state.generatingMsg = "";
-              state.lastError = "";
-              renderContent();
-              toast("\u65e5\u8bb0\u5df2\u5199\u597d");
-            });
+            // 不再自动弹同步对话框：由 user 在生成后看到日记自行选择如何存放
+            state.generating = false;
+            state.generatingMsg = "";
+            state.lastError = "";
+            renderContent();
+            toast("\u65e5\u8bb0\u5df2\u5199\u597d");
           });
         });
       }).catch(function (e) {
@@ -4904,153 +4914,6 @@
       if (stickyNotes.length > 6) stickyNotes = stickyNotes.slice(0, 6);
       if (annotations.length > 6) annotations = annotations.slice(0, 6);
       return { diary: diary, annotations: annotations, stickyNotes: stickyNotes };
-    }
-
-    /* ---------- 同步选项对话框（生成后弹出） ---------- */
-    function showSyncOptionsDialog(ctx, diaryText) {
-      // 已显示过则跳过
-      if (state.syncDialogShown) return Promise.resolve();
-      state.syncDialogShown = true;
-
-      // 用户已选"记住选择"，按记忆配置直接同步
-      if (state.settings.rememberSyncChoice) {
-        var doFact = !!state.settings.syncToFactMemory;
-        var doShort = !!state.settings.syncToShortTerm;
-        if (state.currentDiary) {
-          state.currentDiary.shortTermSync = doShort;
-          state.currentDiary.factSync = doFact;
-          state.currentDiary.updatedAt = Date.now();
-        }
-        var p1 = doFact ? syncFact(roche, ctx, diaryText).catch(function () {}) : Promise.resolve();
-        // 短期记忆：交换模式下延后到用户贴完便签/表情后手动触发；非交换模式直接注入
-        var p2 = (doShort && !state.settings.swapMode) ? syncShortTerm(roche, ctx, state.currentDiary).catch(function () {}) : Promise.resolve();
-        return Promise.all([p1, p2]).then(function () { return saveCurrentDiary(); });
-      }
-
-      return new Promise(function (resolve) {
-        var overlay = el("div", {
-          class: "dms-sync-overlay dms-float",
-          style: {
-            position: "fixed", inset: "0", background: "rgba(74,60,40,0.45)",
-            zIndex: "500", display: "flex", alignItems: "center", justifyContent: "center",
-            animation: "dms-fadeIn .2s ease-out both"
-          }
-        });
-        var dlg = el("div", {
-          class: "dms-sync-dialog",
-          style: {
-            background: "var(--paper)", borderRadius: "var(--radius)",
-            padding: "20px", maxWidth: "360px", width: "90%",
-            boxShadow: "var(--shadow-strong)",
-            border: "1px solid var(--line)"
-          }
-        });
-        dlg.appendChild(el("div", {
-          class: "dms-handwritten",
-          style: { fontSize: "18px", color: "var(--red)", marginBottom: "6px", textAlign: "center" }
-        }, ["\u540c\u6b65\u5230\u54ea\u91cc\uff1f"]));
-        dlg.appendChild(el("div", {
-          style: { fontSize: "12px", color: "var(--ink-mute)", marginBottom: "14px", textAlign: "center" }
-        }, ["\u65e5\u8bb0\u5df2\u5199\u597d\uff0c\u9009\u62e9\u8981\u540c\u6b65\u5230\u54ea\u4e9b\u8bb0\u5fc6\u3002"]));
-
-        // 事实记忆选项
-        var factRow = el("label", {
-          style: { display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px", background: "var(--paper-2)", borderRadius: "var(--radius-sm)", marginBottom: "8px", cursor: "pointer" }
-        }, [
-          el("input", { type: "checkbox", checked: !!state.settings.syncToFactMemory, style: { marginTop: "3px", accentColor: "var(--red)" } }),
-          el("div", { style: { flex: "1" } }, [
-            el("div", { style: { fontSize: "13px", fontWeight: "600", color: "var(--ink)" } }, ["\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"]),
-            el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", marginTop: "2px" } }, ["\u5199\u5165 Roche \u4e3b\u8bb0\u5fc6\uff0c\u6c38\u4e45\u4fdd\u7559\uff0cAI \u80fd\u770b\u5230"])
-          ])
-        ]);
-        var factCb = factRow.querySelector("input");
-
-        // 短期记忆选项（交换模式下提示稍后手动触发）
-        var shortDesc = state.settings.swapMode
-          ? "\u5728\u4f60\u8d34\u5b8c\u4fbf\u7b7e/\u8868\u60c5\u540e\u70b9\u201c\u5b8c\u6210\u4ea4\u6362\u201d\u6309\u94ae\u65f6\uff0c\u628a\u6574\u7bc7\u4ea4\u6362\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u804a\u5929\uff0c\u8ba9 TA \u770b\u5230\u5e76\u56de\u5e94"
-          : "\u628a\u4eca\u5929\u7684\u65e5\u8bb0\u4f5c\u4e3a\u6d88\u606f\u6ce8\u5165\u4e3b\u804a\u5929\uff0c\u4e0b\u6b21\u5bf9\u8bdd AI \u4f1a\u201c\u8bb0\u5f97\u201d\u4eca\u5929";
-        var shortRow = el("label", {
-          style: { display: "flex", alignItems: "flex-start", gap: "10px", padding: "10px", background: "var(--paper-2)", borderRadius: "var(--radius-sm)", marginBottom: "8px", cursor: "pointer" }
-        }, [
-          el("input", { type: "checkbox", checked: !!state.settings.syncToShortTerm, style: { marginTop: "3px", accentColor: "var(--red)" } }),
-          el("div", { style: { flex: "1" } }, [
-            el("div", { style: { fontSize: "13px", fontWeight: "600", color: "var(--ink)" } }, ["\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6"]),
-            el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", marginTop: "2px" } }, [shortDesc])
-          ])
-        ]);
-        var shortCb = shortRow.querySelector("input");
-
-        // 记住选择
-        var rememberRow = el("label", {
-          style: { display: "flex", alignItems: "center", gap: "6px", fontSize: "11px", color: "var(--ink-mute)", marginTop: "6px", cursor: "pointer" }
-        }, [
-          el("input", { type: "checkbox", style: { accentColor: "var(--red)" } }),
-          "\u8bb0\u4f4f\u6b64\u9009\u62e9\uff0c\u4e0b\u6b21\u4e0d\u518d\u8be2\u95ee"
-        ]);
-        var rememberCb = rememberRow.querySelector("input");
-
-        dlg.appendChild(factRow);
-        dlg.appendChild(shortRow);
-        dlg.appendChild(rememberRow);
-
-        // 按钮区
-        var btnRow = el("div", { style: { display: "flex", gap: "8px", marginTop: "14px" } }, [
-          el("button", {
-            class: "dms-btn dms-btn-sm dms-btn-ghost",
-            style: { flex: "1" },
-            onclick: function () { overlay.remove(); resolve(); }
-          }, ["\u7a0d\u540e\u518d\u8bf4"]),
-          el("button", {
-            class: "dms-btn dms-btn-sm dms-btn-primary",
-            style: { flex: "1" },
-            onclick: function () {
-              var doFact = factCb.checked;
-              var doShort = shortCb.checked;
-              var remember = rememberCb.checked;
-              if (remember) {
-                state.settings.syncToFactMemory = doFact;
-                state.settings.syncToShortTerm = doShort;
-                state.settings.rememberSyncChoice = true;
-                saveSettings(roche, state.settings);
-              } else {
-                state.settings.rememberSyncChoice = false;
-                saveSettings(roche, state.settings);
-              }
-              // 标记当前日记的同步状态
-              if (state.currentDiary) {
-                state.currentDiary.shortTermSync = doShort;
-                state.currentDiary.factSync = doFact;
-                state.currentDiary.updatedAt = Date.now();
-              }
-              var promises = [];
-              if (doFact) {
-                promises.push(syncFact(roche, ctx, diaryText).catch(function (e) { console.error("[DMS] fact sync fail", e); }));
-              }
-              // 交换模式：短期记忆延后到"完成交换"按钮时注入
-              // 非交换模式：立即注入
-              if (doShort && !state.settings.swapMode) {
-                promises.push(syncShortTerm(roche, ctx, state.currentDiary).catch(function (e) { console.error("[DMS] short sync fail", e); }));
-              }
-              Promise.all(promises).then(function () {
-                return saveCurrentDiary();
-              }).then(function () {
-                overlay.remove();
-                resolve();
-                var msg = doFact && doShort ? "\u5df2\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6\u4e0e\u77ed\u671f\u8bb0\u5fc6"
-                  : doFact ? "\u5df2\u540c\u6b65\u5230\u4e8b\u5b9e\u8bb0\u5fc6"
-                  : doShort ? (state.settings.swapMode ? "\u5df2\u9009\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6\uff0c\u5b8c\u6210\u4ea4\u6362\u540e\u6ce8\u5165" : "\u5df2\u540c\u6b65\u5230\u77ed\u671f\u8bb0\u5fc6")
-                  : "\u5df2\u8df3\u8fc7\u540c\u6b65";
-                toast(msg);
-              });
-            }
-          }, ["\u786e\u8ba4\u540c\u6b65"])
-        ]);
-        dlg.appendChild(btnRow);
-
-        overlay.appendChild(dlg);
-        overlay.addEventListener("click", function (e) { if (e.target === overlay) { overlay.remove(); resolve(); } });
-        document.body.appendChild(overlay);
-      });
     }
 
     /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为系统消息注入主聊天 ---------- */
@@ -5333,7 +5196,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.7.0",
+    version: "2.7.1",
     apps: [
       {
         id: "daily-memory-summary-home",

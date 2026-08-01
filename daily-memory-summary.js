@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.2.0
+ * 手账日记 (daily-memory-summary) v2.5.9
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -5323,7 +5323,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.3.0",
+    version: "2.5.9",
     apps: [
       {
         id: "daily-memory-summary-home",

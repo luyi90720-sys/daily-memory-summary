@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.2
+ * 手账日记 (daily-memory-summary) v2.6.3
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -2265,14 +2265,18 @@
           "data-block-id": items[0].blockId || "",
           "data-marker": (hasHeart ? "\u2665" : "") + (hasCross ? "~" : "") + (hasComment ? "*" : "")
         });
-        // 合并所有想法到同一个气泡：点批注显示
+        // 合并所有想法到同一个气泡：点批注显示，每条可单独删除
         var comments = items.filter(function (x) { return x.comment; });
         if (comments.length) {
           var tooltip = el("div", { class: "dms-annot-tooltip" }, comments.map(function (x) {
             var label = x.type === "heart" ? "\u5fc3" : x.type === "crossout" ? "\u5212" : "\u6279";
-            return el("div", { style: { marginBottom: comments.length > 1 ? "4px" : "0", lineHeight: "1.5" } }, [
+            return el("div", { style: { display: "flex", alignItems: "center", gap: "6px", marginBottom: comments.length > 1 ? "4px" : "0", lineHeight: "1.5" } }, [
               el("span", { style: { fontWeight: "600", color: x.type === "heart" ? "var(--red)" : "var(--blue)" } }, [label + " "]),
-              x.comment
+              el("span", {}, [x.comment]),
+              el("button", { class: "dms-btn dms-btn-sm dms-btn-ghost", style: { color: "var(--red)", marginLeft: "auto", flexShrink: "0", fontSize: "11px", padding: "1px 6px" }, onclick: function (e) {
+                e.stopPropagation();
+                removeAnnotById(x.id);
+              } }, ["\u5220\u9664"])
             ]);
           }));
           span.appendChild(tooltip);
@@ -2435,6 +2439,17 @@
       }
       toast("\u6ca1\u6709\u53ef\u64a4\u9500\u7684\u64cd\u4f5c");
     }
+    // 删除指定批注（批注/划掉/表白），从当前日记两处批注数组中移除
+    function removeAnnotById(id) {
+      var d = state.currentDiary;
+      if (!d) return;
+      pushUndo();
+      d.annotations = (d.annotations || []).filter(function (a) { return a.id !== id; });
+      d.charAnnotations = (d.charAnnotations || []).filter(function (a) { return a.id !== id; });
+      saveCurrentDiary();
+      renderContent();
+      toast("\u5df2\u5220\u9664\u8be5\u6279\u6ce8");
+    }
 
     /* ---------- 便签 ---------- */
     function addStickyNote(pageEl) {
@@ -2548,15 +2563,11 @@
         });
         menu.appendChild(el("div", { class: "dms-sticky-action-title" }, ["\u4fbf\u7b7e\u64cd\u4f5c"]));
         var btns = el("div", { class: "dms-sticky-action-btns" });
+        btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
+          menu.remove();
+          showStickyStylePicker(annot, sticky);
+        } }, ["\u6362\u6837\u5f0f"]));
         if (!annot.byChar) {
-          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
-            menu.remove();
-            startDragMode();
-          } }, ["\u62d6\u52a8"]));
-          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
-            menu.remove();
-            showStickyStylePicker(annot, sticky);
-          } }, ["\u6362\u6837\u5f0f"]));
           btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", style: { color: "var(--red)" }, onclick: function () {
             menu.remove();
             var arr = state.currentDiary.annotations;
@@ -2570,16 +2581,6 @@
             sticky.remove();
             toast("\u5df2\u5220\u9664");
           } }, ["\u5220\u9664"]));
-        } else {
-          // char 写的便签：只能拖动 / 换样式（不可编辑删除）
-          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
-            menu.remove();
-            startDragMode();
-          } }, ["\u62d6\u52a8"]));
-          btns.appendChild(el("button", { class: "dms-btn dms-btn-ghost dms-btn-sm", onclick: function () {
-            menu.remove();
-            showStickyStylePicker(annot, sticky);
-          } }, ["\u6362\u6837\u5f0f"]));
         }
         menu.appendChild(btns);
         document.body.appendChild(menu);
@@ -2593,155 +2594,71 @@
         }, 0);
       }
 
-      // 拖拽模式：统一用 getBoundingClientRect 计算起点 + 位移增量，避免 offsetLeft/滚动偏移导致跳跃
-      function startDragMode() {
-        toast("\u62d6\u52a8\u6a21\u5f0f\uff1a\u6309\u4f4f\u5e76\u79fb\u52a8\uff0c\u677e\u624b\u7ed3\u675f");
-        sticky.classList.add("dragging");
-        text.contentEditable = "false";
-        var dragging = false;
-        var startBodyX = 0, startBodyY = 0, startClientX = 0, startClientY = 0;
-
-        function getBodyRect() {
-          var body = pageEl.querySelector(".dms-page-body");
-          return body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+      // ---- 自由拖拽：按住即可拖动（无需长按进入拖拽模式），长按 500ms 弹操作菜单 ----
+      var dragInfo = null;
+      var longPressTimer = null;
+      var longPressStart = null;
+      function clearLongPress() {
+        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
+      }
+      function onDragDown(clientX, clientY) {
+        var br = getBodyRect();
+        var sr = sticky.getBoundingClientRect();
+        dragInfo = { startClientX: clientX, startClientY: clientY, startBodyX: sr.left - br.left, startBodyY: sr.top - br.top, moved: false };
+        longPressStart = { x: clientX, y: clientY };
+        longPressTimer = setTimeout(function () {
+          if (dragInfo && dragInfo.moved) { longPressTimer = null; return; }
+          longPressTimer = null;
+          if (navigator.vibrate) navigator.vibrate(30);
+          showStickyActionMenu(clientX, clientY);
+        }, 500);
+      }
+      function onDragMove(clientX, clientY) {
+        // 移动超阈值 → 取消长按
+        if (longPressTimer && longPressStart && (Math.abs(clientX - longPressStart.x) > 8 || Math.abs(clientY - longPressStart.y) > 8)) {
+          clearLongPress();
         }
-        function beginDrag(clientX, clientY) {
-          dragging = true;
-          var br = getBodyRect();
-          var sr = sticky.getBoundingClientRect();
-          startBodyX = sr.left - br.left;
-          startBodyY = sr.top - br.top;
-          startClientX = clientX;
-          startClientY = clientY;
+        if (!dragInfo) return;
+        if (!dragInfo.moved) {
+          if (Math.abs(clientX - dragInfo.startClientX) <= 6 && Math.abs(clientY - dragInfo.startClientY) <= 6) return;
+          dragInfo.moved = true;
+          sticky.classList.add("dragging");
         }
-        function moveDrag(clientX, clientY) {
-          if (!dragging) return;
-          var dx = clientX - startClientX;
-          var dy = clientY - startClientY;
-          var p = clampPos(startBodyX + dx, startBodyY + dy);
-          annot.x = p.x; annot.y = p.y;
-          sticky.style.left = p.x + "px";
-          sticky.style.top = p.y + "px";
-        }
-        function finishDrag() {
-          if (dragging) {
-            dragging = false;
-            updateBlockIdByPosition();
-            saveCurrentDiary();
-            endDragMode();
-          }
-        }
-
-        function onPointerDown(e) {
-          if (e.target === text || e.target === removeBtn) return;
-          beginDrag(e.clientX, e.clientY);
-          e.preventDefault();
-        }
-        function onPointerMove(e) { moveDrag(e.clientX, e.clientY); }
-        function onPointerUp() { finishDrag(); }
-
-        function onTouchStart(e) {
-          if (e.target === text || e.target === removeBtn) return;
-          if (e.touches.length !== 1) return;
-          var t = e.touches[0];
-          beginDrag(t.clientX, t.clientY);
-          e.preventDefault();
-        }
-        function onTouchMove(e) {
-          if (e.touches.length !== 1) return;
-          var t = e.touches[0];
-          e.preventDefault();
-          moveDrag(t.clientX, t.clientY);
-        }
-        function onTouchEnd() { finishDrag(); }
-
-        sticky.addEventListener("pointerdown", onPointerDown);
-        sticky.addEventListener("pointermove", onPointerMove);
-        sticky.addEventListener("pointerup", onPointerUp);
-        sticky.addEventListener("pointercancel", onPointerUp);
-        sticky.addEventListener("touchstart", onTouchStart, { passive: false });
-        sticky.addEventListener("touchmove", onTouchMove, { passive: false });
-        sticky.addEventListener("touchend", onTouchEnd);
-        sticky.addEventListener("touchcancel", onTouchEnd);
-        sticky._dragHandlers = { onPointerDown: onPointerDown, onPointerMove: onPointerMove, onPointerUp: onPointerUp,
-          onTouchStart: onTouchStart, onTouchMove: onTouchMove, onTouchEnd: onTouchEnd };
-        sticky._isDragMode = true;
-        function endDragMode() {
-          if (!sticky._isDragMode) return;
-          sticky._isDragMode = false;
+        var dx = clientX - dragInfo.startClientX;
+        var dy = clientY - dragInfo.startClientY;
+        var p = clampPos(dragInfo.startBodyX + dx, dragInfo.startBodyY + dy);
+        annot.x = p.x; annot.y = p.y;
+        sticky.style.left = p.x + "px";
+        sticky.style.top = p.y + "px";
+      }
+      function onDragUp() {
+        if (dragInfo && dragInfo.moved) {
+          updateBlockIdByPosition();
+          saveCurrentDiary();
           sticky.classList.remove("dragging");
-          text.contentEditable = annot.byChar ? "false" : "true";
-          var h = sticky._dragHandlers;
-          if (h) {
-            sticky.removeEventListener("pointerdown", h.onPointerDown);
-            sticky.removeEventListener("pointermove", h.onPointerMove);
-            sticky.removeEventListener("pointerup", h.onPointerUp);
-            sticky.removeEventListener("pointercancel", h.onPointerUp);
-            sticky.removeEventListener("touchstart", h.onTouchStart);
-            sticky.removeEventListener("touchmove", h.onTouchMove);
-            sticky.removeEventListener("touchend", h.onTouchEnd);
-            sticky.removeEventListener("touchcancel", h.onTouchEnd);
-          }
-          sticky._dragHandlers = null;
         }
-        sticky._endDragMode = endDragMode;
+        dragInfo = null;
+        clearLongPress();
       }
 
-      // 右键 / 长按触发操作菜单
+      // 指针事件统一处理鼠标+触摸；setPointerCapture 保证 move/up 都落在便签上
+      sticky.addEventListener("pointerdown", function (e) {
+        if (e.target === removeBtn) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        try { sticky.setPointerCapture(e.pointerId); } catch (err) {}
+        sticky.style.touchAction = "none";
+        onDragDown(e.clientX, e.clientY);
+      });
+      sticky.addEventListener("pointermove", function (e) {
+        if (dragInfo && dragInfo.moved) e.preventDefault();
+        onDragMove(e.clientX, e.clientY);
+      });
+      sticky.addEventListener("pointerup", function () { sticky.style.touchAction = "auto"; onDragUp(); });
+      sticky.addEventListener("pointercancel", function () { sticky.style.touchAction = "auto"; onDragUp(); });
+      // 右键弹出操作菜单（桌面端）
       sticky.addEventListener("contextmenu", function (e) {
         e.preventDefault();
         showStickyActionMenu(e.clientX, e.clientY);
-      });
-      var longPressTimer = null;
-      var longPressStart = null;
-      sticky.addEventListener("touchstart", function (e) {
-        if (e.target === text || e.target === removeBtn) return;
-        if (e.touches.length !== 1) return;
-        if (sticky._isDragMode) return; // 拖拽模式中不触发菜单
-        var t = e.touches[0];
-        longPressStart = { x: t.clientX, y: t.clientY };
-        longPressTimer = setTimeout(function () {
-          if (navigator.vibrate) navigator.vibrate(30);
-          showStickyActionMenu(t.clientX, t.clientY);
-          longPressTimer = null;
-        }, 500);
-      }, { passive: true });
-      sticky.addEventListener("touchmove", function (e) {
-        if (!longPressTimer || !longPressStart) return;
-        var t = e.touches[0];
-        if (Math.abs(t.clientX - longPressStart.x) > 8 || Math.abs(t.clientY - longPressStart.y) > 8) {
-          clearTimeout(longPressTimer);
-          longPressTimer = null;
-        }
-      }, { passive: true });
-      sticky.addEventListener("touchend", function () {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      });
-      sticky.addEventListener("touchcancel", function () {
-        if (longPressTimer) { clearTimeout(longPressTimer); longPressTimer = null; }
-      });
-
-      // 鼠标长按（桌面端）：按住 500ms 也弹菜单
-      var mouseDownTimer = null;
-      sticky.addEventListener("mousedown", function (e) {
-        if (e.target === text || e.target === removeBtn) return;
-        if (e.button !== 0) return;
-        if (sticky._isDragMode) return;
-        mouseDownTimer = setTimeout(function () {
-          showStickyActionMenu(e.clientX, e.clientY);
-          mouseDownTimer = null;
-        }, 500);
-      });
-      sticky.addEventListener("mousemove", function (e) {
-        if (!mouseDownTimer) return;
-        // 鼠标移动距离过大取消
-        if (Math.abs(e.movementX) > 2 || Math.abs(e.movementY) > 2) {
-          clearTimeout(mouseDownTimer);
-          mouseDownTimer = null;
-        }
-      });
-      sticky.addEventListener("mouseup", function () {
-        if (mouseDownTimer) { clearTimeout(mouseDownTimer); mouseDownTimer = null; }
       });
 
       // char 写的便签加标记
@@ -5380,7 +5297,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.2",
+    version: "2.6.3",
     apps: [
       {
         id: "daily-memory-summary-home",

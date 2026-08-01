@@ -1482,6 +1482,7 @@
       diaryKey: "",
       annotMenuEl: null,
       annotMode: false,     // 批注模式：点亮后点段落即可批注
+      undoStack: [],        // 撤销栈：批注/便签/表情修改前的快照
       settingsOpen: false,
       stickerLib: null,
       stickerPickerOpen: false,
@@ -1976,7 +1977,8 @@
             toast(state.annotMode ? "\u6279\u6ce8\u6a21\u5f0f\uff1a\u70b9\u4e00\u4e0b\u60f3\u6279\u6ce8\u7684\u6bb5\u843d" : "\u5df2\u9000\u51fa\u6279\u6ce8\u6a21\u5f0f");
           } }, ["\u6279\u6ce8"]),
           el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
-          el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"])
+          el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"]),
+          el("button", { class: "dms-tool-btn", title: "\u64a4\u9500\u4e0a\u4e00\u6b21\u64cd\u4f5c", onclick: function () { undoLast(); } }, ["\u64a4\u9500"])
         ])
       ]));
 
@@ -2210,22 +2212,17 @@
           return Object.assign({}, a, { start: localStart, end: localStart + a.selectedText.length });
         }));
         blockWrap.appendChild(blockText);
-        // 手机端：点击段落 = 选中整段弹批注菜单（无需拖选）；批注模式下强制弹，非模式有拖选选区时不打扰
+        // 批注模式下点段落 = 弹菜单（原句=整段，可在菜单里改）；非模式点段落只浏览
+        // （拖选文字随时弹菜单，原句=自选文字，由 setupTextSelection 处理）
         blockWrap.addEventListener("click", function (e) {
-          var sel = window.getSelection();
-          // 非模式且无菜单打开且有拖选选区时不打扰；菜单已打开时点段落=切换目标
-          if (!state.annotMode && !state.annotMenuEl && sel && sel.toString().trim()) return;
+          if (!state.annotMode) return;
           var pageEl = blockWrap.closest(".dms-diary-page");
           var r = document.createRange();
           r.selectNodeContents(blockText);
-          // 把整段设为真实选区：1)让用户看清批注对象 2)避免 touchend 的 checkSelection 误关菜单
-          if (sel) { sel.removeAllRanges(); sel.addRange(r); }
           showAnnotMenu(blk.content, r, pageEl);
           // 批注模式用完自动熄灭按钮（不重建页面，避免菜单被 renderContent 清理）
-          if (state.annotMode) {
-            state.annotMode = false;
-            if (state.annotBtnEl) state.annotBtnEl.classList.remove("dms-btn-on");
-          }
+          state.annotMode = false;
+          if (state.annotBtnEl) state.annotBtnEl.classList.remove("dms-btn-on");
         });
         container.appendChild(blockWrap);
         globalPos = blk.end + 1;
@@ -2339,6 +2336,7 @@
           createdAt: Date.now()
         };
         if (!state.currentDiary.annotations) state.currentDiary.annotations = [];
+        pushUndo();
         state.currentDiary.annotations.push(annot);
         saveCurrentDiary();
         window.getSelection().removeAllRanges();
@@ -2381,6 +2379,37 @@
       }
     }
 
+    /* ---------- 撤销（批注/便签/表情修改前快照） ---------- */
+    function pushUndo() {
+      var d = state.currentDiary;
+      if (!d) return;
+      state.undoStack.push({
+        diaryKey: state.diaryKey,
+        annotations: (d.annotations || []).map(function (x) { return Object.assign({}, x); }),
+        stickers: (d.stickers || []).map(function (x) { return Object.assign({}, x); }),
+        charAnnotations: (d.charAnnotations || []).map(function (x) { return Object.assign({}, x); }),
+        charStickers: (d.charStickers || []).map(function (x) { return Object.assign({}, x); })
+      });
+      if (state.undoStack.length > 20) state.undoStack.shift();
+    }
+    function undoLast() {
+      // 跳过不属于当前日记的快照（防止切日记后误撤销）
+      while (state.undoStack.length) {
+        var u = state.undoStack.pop();
+        if (u.diaryKey !== state.diaryKey) continue;
+        var d = state.currentDiary;
+        d.annotations = u.annotations;
+        d.stickers = u.stickers;
+        d.charAnnotations = u.charAnnotations;
+        d.charStickers = u.charStickers;
+        saveCurrentDiary();
+        renderContent();
+        toast("\u5df2\u64a4\u9500");
+        return;
+      }
+      toast("\u6ca1\u6709\u53ef\u64a4\u9500\u7684\u64cd\u4f5c");
+    }
+
     /* ---------- 便签 ---------- */
     function addStickyNote(pageEl) {
       if (!state.currentDiary) return;
@@ -2396,6 +2425,7 @@
         createdAt: Date.now()
       };
       if (!state.currentDiary.annotations) state.currentDiary.annotations = [];
+      pushUndo();
       state.currentDiary.annotations.push(annot);
       // 直接在页面上添加便签 DOM，不重新渲染整个页面
       var body = pageEl.querySelector(".dms-page-body");
@@ -3241,6 +3271,7 @@
               blockId: null,
               createdAt: Date.now()
             };
+            pushUndo();
             state.currentDiary.stickers.push(placed);
             // 直接在页面上添加贴纸 DOM，不重新渲染整个页面
             var body = pageEl.querySelector(".dms-page-body");
@@ -5326,7 +5357,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.5.9",
+    version: "2.6.0",
     apps: [
       {
         id: "daily-memory-summary-home",

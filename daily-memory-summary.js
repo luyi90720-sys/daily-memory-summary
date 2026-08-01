@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.5.9
+ * 手账日记 (daily-memory-summary) v2.6.0
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -923,21 +923,23 @@
       "",
       "/* ===== 弹窗组件全局样式（挂在 body 上，不依赖 ROOT_CLASS）===== */",
       ".dms-sticker-picker.dms-float, .dms-sticky-style-popup.dms-float, .dms-annot-menu.dms-float, .dms-sync-overlay.dms-float, .dms-mount-dialog.dms-float, .dms-toast.dms-float{",
-      "  color:var(--ink);font-family:var(--font-serif);box-sizing:border-box;",
+      "  color:var(--ink);font-family:var(--font-serif);box-sizing:border-box;position:fixed;",
       "}",
       ".dms-sticker-picker.dms-float{",
       "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "  left:50%;bottom:16px;transform:translateX(-50%);z-index:300;",
       "}",
       ".dms-sticky-style-popup.dms-float{",
       "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
+      "  z-index:220;",
       "}",
       ".dms-annot-menu.dms-float{",
       "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
-      "  padding:8px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;",
+      "  padding:8px;display:flex;gap:4px;align-items:center;flex-wrap:wrap;z-index:200;",
       "}",
       ".dms-sync-overlay.dms-float{",
       "  background:rgba(74,60,40,0.45);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);",
-      "  display:flex;align-items:center;justify-content:center;padding:16px;",
+      "  display:flex;align-items:center;justify-content:center;padding:16px;inset:0;z-index:250;",
       "}",
       ".dms-sync-overlay.dms-float .dms-card{",
       "  background:var(--paper);border-radius:var(--radius);box-shadow:var(--shadow-strong);padding:18px;max-width:420px;width:92%;max-height:85vh;overflow-y:auto;",
@@ -946,6 +948,7 @@
       ".dms-mount-dialog.dms-float{",
       "  background:var(--paper);border-radius:var(--radius);box-shadow:var(--shadow-strong);padding:16px;",
       "  border:1px solid var(--line);color:var(--ink);",
+      "  left:50%;top:50%;transform:translate(-50%,-50%);z-index:260;",
       "}",
       ".dms-toast.dms-float{",
       "  background:rgba(74,60,40,0.92);color:var(--paper);padding:8px 14px;border-radius:var(--radius-sm);",
@@ -975,7 +978,7 @@
       "/* 便签/表情操作菜单（拖拽/换样式/删除）*/",
       ".dms-sticky-action-menu.dms-float{",
       "  background:var(--paper);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow-strong);",
-      "  padding:8px;min-width:120px;",
+      "  padding:8px;min-width:120px;z-index:220;",
       "}",
       ".dms-sticky-action-menu .dms-sticky-action-title{font-size:11px;color:var(--ink-mute);margin-bottom:6px;text-align:center;}",
       ".dms-sticky-action-menu .dms-sticky-action-btns{display:flex;flex-direction:column;gap:4px;}",

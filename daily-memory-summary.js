@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.3
+ * 手账日记 (daily-memory-summary) v2.6.4
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -2265,6 +2265,8 @@
           "data-block-id": items[0].blockId || "",
           "data-marker": (hasHeart ? "\u2665" : "") + (hasCross ? "~" : "") + (hasComment ? "*" : "")
         });
+        // 同一段原文只渲染一次；删除线/颜色/边框由组合 class 控制（先设文本，再挂气泡，避免 textContent 清空子节点）
+        span.textContent = text.slice(g.start, g.end);
         // 合并所有想法到同一个气泡：点批注显示，每条可单独删除
         var comments = items.filter(function (x) { return x.comment; });
         if (comments.length) {
@@ -2281,8 +2283,6 @@
           }));
           span.appendChild(tooltip);
         }
-        // 同一段原文只渲染一次；删除线/颜色/边框由组合 class 控制
-        span.textContent = text.slice(g.start, g.end);
         // 手机端无 hover：点击批注显示/隐藏想法气泡
         span.addEventListener("click", function (ev) {
           ev.stopPropagation();
@@ -2641,20 +2641,38 @@
         clearLongPress();
       }
 
-      // 指针事件统一处理鼠标+触摸；setPointerCapture 保证 move/up 都落在便签上
-      sticky.addEventListener("pointerdown", function (e) {
+      // ---- 触摸拖动（touch 事件；tap 不拦截可编辑文字，移动时才 preventDefault 进入拖拽）----
+      sticky.addEventListener("touchstart", function (e) {
         if (e.target === removeBtn) return;
-        if (e.button !== undefined && e.button !== 0) return;
-        try { sticky.setPointerCapture(e.pointerId); } catch (err) {}
-        sticky.style.touchAction = "none";
-        onDragDown(e.clientX, e.clientY);
-      });
-      sticky.addEventListener("pointermove", function (e) {
+        if (e.touches.length !== 1) return;
+        var t = e.touches[0];
+        onDragDown(t.clientX, t.clientY);
+      }, { passive: false });
+      sticky.addEventListener("touchmove", function (e) {
+        if (e.touches.length !== 1) return;
+        var t = e.touches[0];
+        if (dragInfo && dragInfo.moved) e.preventDefault();
+        onDragMove(t.clientX, t.clientY);
+      }, { passive: false });
+      sticky.addEventListener("touchend", onDragUp);
+      sticky.addEventListener("touchcancel", onDragUp);
+      // ---- 鼠标拖动：down 时挂到 window，up 时移除，多便签互不干扰 ----
+      function onMouseMove(e) {
         if (dragInfo && dragInfo.moved) e.preventDefault();
         onDragMove(e.clientX, e.clientY);
+      }
+      function onMouseUp() {
+        window.removeEventListener("mousemove", onMouseMove);
+        window.removeEventListener("mouseup", onMouseUp);
+        onDragUp();
+      }
+      sticky.addEventListener("mousedown", function (e) {
+        if (e.target === removeBtn) return;
+        if (e.button !== 0) return;
+        window.addEventListener("mousemove", onMouseMove);
+        window.addEventListener("mouseup", onMouseUp);
+        onDragDown(e.clientX, e.clientY);
       });
-      sticky.addEventListener("pointerup", function () { sticky.style.touchAction = "auto"; onDragUp(); });
-      sticky.addEventListener("pointercancel", function () { sticky.style.touchAction = "auto"; onDragUp(); });
       // 右键弹出操作菜单（桌面端）
       sticky.addEventListener("contextmenu", function (e) {
         e.preventDefault();
@@ -5297,7 +5315,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.3",
+    version: "2.6.4",
     apps: [
       {
         id: "daily-memory-summary-home",

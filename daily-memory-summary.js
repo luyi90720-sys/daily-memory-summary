@@ -1964,7 +1964,7 @@
           el("div", { class: "dms-page-meta" }, [diary.dateKey])
         ]),
         el("div", { style: { display: "flex", gap: "4px" } }, [
-          el("button", { class: "dms-tool-btn", title: "\u9009\u4e2d\u6587\u5b57\u540e\u5f39\u51fa\u6279\u6ce8\u83dc\u5355", onclick: function () { toast("\u8bf7\u5728 TA \u7684\u65e5\u8bb0\u4e0a\u9009\u4e2d\u60f3\u6279\u6ce8\u7684\u6587\u5b57"); } }, ["\u6279\u6ce8"]),
+          el("button", { class: "dms-tool-btn", title: "\u70b9\u51fb TA \u65e5\u8bb0\u91cc\u7684\u6bb5\u843d\u5373\u53ef\u6279\u6ce8", onclick: function () { toast("\u70b9\u4e00\u4e0b TA \u65e5\u8bb0\u91cc\u7684\u6bb5\u843d\uff0c\u5c31\u53ef\u4ee5\u6279\u6ce8/\u5212\u6389/\u8868\u767d"); } }, ["\u6279\u6ce8"]),
           el("button", { class: "dms-tool-btn", onclick: function () { addStickyNote(charPage); } }, ["\u4fbf\u7b7e"]),
           el("button", { class: "dms-tool-btn", onclick: function () { openStickerPicker(charPage); } }, ["\u8868\u60c5"])
         ])
@@ -2200,6 +2200,15 @@
           return Object.assign({}, a, { start: localStart, end: localStart + a.selectedText.length });
         }));
         blockWrap.appendChild(blockText);
+        // 手机端：点击段落 = 选中整段弹批注菜单（无需拖选）；已有拖选选区时不打扰
+        blockWrap.addEventListener("click", function (e) {
+          var sel = window.getSelection();
+          if (sel && sel.toString().trim()) return;
+          var pageEl = blockWrap.closest(".dms-diary-page");
+          var r = document.createRange();
+          r.selectNodeContents(blockText);
+          showAnnotMenu(blk.content, r, pageEl);
+        });
         container.appendChild(blockWrap);
         globalPos = blk.end + 1;
       });
@@ -2280,18 +2289,23 @@
       menu.style.transform = "translateX(-50%)";
       menu.style.visibility = "visible";
 
+      // 原句输入框（手机端点段落时默认为整段，可手动改为更精确的原句）
+      var originInput = el("textarea", { class: "dms-annot-input", placeholder: "\u539f\u53e5\u2026", style: { minHeight: "40px" } });
+      originInput.value = selectedText;
       var inputBox = el("textarea", { class: "dms-annot-input", placeholder: "\u5199\u4e0b\u4f60\u7684\u60f3\u6cd5\u2026" });
 
       function doAnnotate(type) {
         var comment = inputBox.value.trim();
+        var origin = originInput.value.trim();
+        if (!origin) { toast("\u8bf7\u5199\u4e0b\u8981\u6279\u6ce8\u7684\u539f\u53e5"); return; }
         if (type !== "heart" && type !== "crossout" && !comment) {
           toast("\u8bf7\u5148\u5199\u4e0b\u60f3\u6cd5");
           return;
         }
-        // 找出选区所在的块 id
+        // 找出选区所在的块 id（不依赖外层 textEl，避免闭包引用错误）
         var blockId = null;
         var node = range.commonAncestorContainer;
-        while (node && node !== textEl) {
+        while (node && node !== document.body) {
           if (node.nodeType === 1 && node.classList && node.classList.contains("dms-block")) {
             blockId = node.getAttribute("data-block-id");
             break;
@@ -2301,7 +2315,7 @@
         var annot = {
           id: crypto.randomUUID(),
           type: type,
-          selectedText: selectedText,
+          selectedText: origin,
           comment: comment,
           blockId: blockId,
           createdAt: Date.now()
@@ -2315,11 +2329,16 @@
         toast(type === "comment" ? "\u5df2\u6279\u6ce8" : type === "crossout" ? "\u5df2\u5212\u6389" : type === "heart" ? "\u5df2\u8868\u767d" : "\u5df2\u6dfb\u52a0");
       }
 
-      menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("comment"); } }, ["\u6279\u6ce8"]));
-      menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("crossout"); } }, ["\u5212\u6389"]));
-      menu.appendChild(el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("heart"); } }, ["\u8868\u767d"]));
+      menu.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", width: "100%" } }, ["\u539f\u53e5\uff1a"]));
+      menu.appendChild(originInput);
+      menu.appendChild(el("div", { style: { fontSize: "11px", color: "var(--ink-mute)", width: "100%", marginTop: "4px" } }, ["\u60f3\u6cd5\uff1a"]));
       menu.appendChild(inputBox);
-      menu.appendChild(el("button", { class: "dms-tool-btn", style: { alignSelf: "flex-end" }, onclick: function () { doAnnotate("comment"); } }, ["\u786e\u5b9a"]));
+      menu.appendChild(el("div", { style: { display: "flex", gap: "4px", width: "100%", marginTop: "4px" } }, [
+        el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("comment"); } }, ["\u6279\u6ce8"]),
+        el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("crossout"); } }, ["\u5212\u6389"]),
+        el("button", { class: "dms-tool-btn", onclick: function () { doAnnotate("heart"); } }, ["\u8868\u767d"]),
+        el("button", { class: "dms-tool-btn", style: { marginLeft: "auto" }, onclick: function () { doAnnotate("comment"); } }, ["\u786e\u5b9a"])
+      ]));
 
       state.annotMenuEl = menu;
 

@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.7
+ * 手账日记 (daily-memory-summary) v2.6.8
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -2555,6 +2555,11 @@
           y: Math.max(0, Math.min(ny, rect.height - sticky.offsetHeight))
         };
       }
+      // 便签所在页面 body 的视口坐标（拖拽起点换算用）
+      function getBodyRect() {
+        var body = pageEl.querySelector(".dms-page-body");
+        return body ? body.getBoundingClientRect() : { left: 0, top: 0 };
+      }
 
       // 长按弹出操作菜单：拖拽 / 换样式 / 删除
       function showStickyActionMenu(clientX, clientY) {
@@ -2646,35 +2651,38 @@
         sticky._menuShown = false;
       }
 
-      // ---- 触摸拖动（移动端）：按住便签非文字区域即拖，文字区保留编辑 ----
+      // ---- 自由拖拽：pointer 事件统一处理鼠标+触摸（最初版方案，setPointerCapture 保证 move/up 持续派发）----
+      // 按住便签非文字区域即拖，文字区保留编辑；touch 事件仅作兜底（pointer 已接管时跳过）
+      sticky.addEventListener("pointerdown", function (e) {
+        if (e.target === text || e.target === removeBtn) return;
+        if (e.button !== undefined && e.button !== 0) return;
+        try { sticky.setPointerCapture(e.pointerId); } catch (err) {}
+        onDragDown(e.clientX, e.clientY);
+      });
+      sticky.addEventListener("pointermove", function (e) {
+        if (!dragInfo) return;
+        if (dragInfo.moved) e.preventDefault();
+        onDragMove(e.clientX, e.clientY);
+      });
+      sticky.addEventListener("pointerup", onDragUp);
+      sticky.addEventListener("pointercancel", onDragUp);
+      // ---- 触摸兜底：仅当 pointer 事件不可用时生效 ----
       sticky.addEventListener("touchstart", function (e) {
+        if (dragInfo) return; // pointer 已接管
         if (e.target === text || e.target === removeBtn) return;
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
         onDragDown(t.clientX, t.clientY);
       }, { passive: true });
       sticky.addEventListener("touchmove", function (e) {
+        if (!dragInfo) return;
         if (e.touches.length !== 1) return;
         var t = e.touches[0];
-        // 进入拖拽后阻止页面滚动，避免便签相对位置漂移
-        if (dragInfo && dragInfo.moved) e.preventDefault();
+        if (dragInfo.moved) e.preventDefault();
         onDragMove(t.clientX, t.clientY);
       }, { passive: false });
       sticky.addEventListener("touchend", onDragUp);
       sticky.addEventListener("touchcancel", onDragUp);
-      // ---- 鼠标拖动（桌面端）：pointer 事件，触摸由 pointerType 分流走 touch ----
-      sticky.addEventListener("pointerdown", function (e) {
-        if (e.target === text || e.target === removeBtn) return;
-        if (e.pointerType === "touch") return; // 触摸走 touch 事件
-        if (e.button !== 0) return;
-        try { sticky.setPointerCapture(e.pointerId); } catch (err) {}
-        onDragDown(e.clientX, e.clientY);
-      });
-      sticky.addEventListener("pointermove", function (e) {
-        if (dragInfo) onDragMove(e.clientX, e.clientY);
-      });
-      sticky.addEventListener("pointerup", onDragUp);
-      sticky.addEventListener("pointercancel", onDragUp);
       // 右键弹出操作菜单（桌面端）
       sticky.addEventListener("contextmenu", function (e) {
         e.preventDefault();
@@ -5317,7 +5325,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.6.7",
+    version: "2.6.8",
     apps: [
       {
         id: "daily-memory-summary-home",

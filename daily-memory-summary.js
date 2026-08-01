@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.6.0
+ * 手账日记 (daily-memory-summary) v2.6.1
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -1264,6 +1264,7 @@
       "  line-height:1.5;white-space:normal;width:max-content;max-width:200px;",
       "}",
       "." + ROOT_CLASS + " .dms-annot:hover .dms-annot-tooltip{opacity:1;}",
+      "." + ROOT_CLASS + " .dms-annot .dms-annot-tip-show{opacity:1;pointer-events:auto;}",
       "." + ROOT_CLASS + " .dms-annot::after{",
       "  content:attr(data-marker);font-size:9px;color:var(--red);vertical-align:super;margin-left:2px;",
       "}",
@@ -2231,11 +2232,8 @@
 
     // 在一段文本上渲染批注（无块概念）
     function renderPlainAnnotated(container, text, annots) {
-      var merged = [];
-      var lastEnd = -1;
-      annots.forEach(function (a) {
-        if (a.start > lastEnd) { merged.push(a); lastEnd = a.end; }
-      });
+      // 允许同一原句叠加多个批注（划掉+表白+批注），不再按 end 去重丢弃
+      var merged = annots.slice().sort(function (a, b) { return (a.start - b.start) || (a.end - b.end); });
       var pos = 0;
       merged.forEach(function (a) {
         if (a.start > pos) {
@@ -2262,8 +2260,17 @@
           ]);
           span.appendChild(tooltip);
         }
+        // 手机端无 hover：点击批注显示/隐藏想法气泡
+        span.addEventListener("click", function (ev) {
+          ev.stopPropagation();
+          var tip = this.querySelector(".dms-annot-tooltip");
+          if (!tip) return;
+          var show = !tip.classList.contains("dms-annot-tip-show");
+          tip.classList.toggle("dms-annot-tip-show", show);
+          if (show) setTimeout(function () { tip.classList.remove("dms-annot-tip-show"); }, 3000);
+        });
         container.appendChild(span);
-        pos = a.end;
+        if (a.end > pos) pos = a.end;
       });
       if (pos < text.length) {
         container.appendChild(document.createTextNode(text.slice(pos)));
@@ -5139,18 +5146,15 @@
     }
 
     /* ---------- 批注行格式（注入短期记忆用）----------
-     * 文字批注（批注/表白/划掉）：【who 批注：批注内容 ‖ 原文「原句」】
-     * 无批注内容时：【who 表白：原文「原句」】
-     * 固定分隔符 ‖（U+2016）与「」便于解析端拆分"原句"和"批注内容"
+     * 文字批注（批注/表白/划掉）：【who 批注：想法内容】（有想法输出想法，没想法输出原句）
+     * 便签/表情：【who 的便签：内容】/【who 的表情：说明】
      */
     function buildAnnotLabel(a) {
       return a.type === "heart" ? "\u8868\u767d" : a.type === "crossout" ? "\u5212\u6389" : "\u6279\u6ce8";
     }
     function buildAnnotBody(a) {
-      if (a.selectedText) {
-        return (a.comment ? a.comment + " \u2016 \u539f\u6587\u300c" + a.selectedText + "\u300d" : "\u539f\u6587\u300c" + a.selectedText + "\u300d");
-      }
-      return a.comment || "";
+      // 有想法输出想法，没想法输出原句；不再带「原文」引用
+      return a.comment ? a.comment : (a.selectedText || "");
     }
     // 批注是否有实质内容：空便签/空批注不注入，避免出现【user 的便签：】这类空行
     function hasAnnotContent(a) {

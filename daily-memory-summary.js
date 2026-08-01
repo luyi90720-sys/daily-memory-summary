@@ -1,5 +1,5 @@
 /*
- * 手账日记 (daily-memory-summary) v2.7.11
+ * 手账日记 (daily-memory-summary) v2.7.12
  * 手账本风格的交换日记 — user先写日记，再让TA回写，互相贴表情包/便签。
  * 风格：暖色纸张手账本 + 手写字体 + 和纸胶带装饰。
  * v2.2.0:
@@ -9,7 +9,7 @@
  *   - 交换模式流程：user先写日记 → 写好后让TA回写 → user给TA日记贴表情包/便签
  *   - char日记分块（【块A】【块B】...），可针对块贴表情包/便签，方便后续char反应
  *   - 同步选项对话框：生成后弹多选（事实记忆/短期记忆），可选"记住选择"
- *   - 短期记忆同步：通过 RocheToolkit.simulateSystemNotice 把交换日记作为消息注入主聊天
+ *   - 短期记忆同步：作为 TA（char）的消息注入主聊天（simulateCharMessage），可正常渲染
  *   - 手机端适配：600px 以下单列布局，触摸友好
  *   - 修复事实记忆截断问题（不再 slice 到 800 字）
  *   - 历史日记按 cid:dateKey 存储，重新生成自动覆盖
@@ -5134,7 +5134,7 @@
       return { diary: diary, annotations: annotations, stickyNotes: stickyNotes, stickerNotes: stickerNotes };
     }
 
-    /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为系统消息注入主聊天 ---------- */
+    /* ---------- 通过 RocheToolkit 或 IndexedDB 把交换日记作为 TA（char）的消息注入主聊天 ---------- */
     function syncShortTerm(roche, ctx, diary) {
       if (!diary) return Promise.resolve();
       var cid = ctx && ctx.conversationId;
@@ -5142,20 +5142,37 @@
       if (!text) { console.warn("[DMS] syncShortTerm: empty text"); return Promise.resolve(); }
       console.log("[DMS] syncShortTerm start, cid=", cid, "text length=", text.length);
 
-      // 优先用 RocheToolkit.simulateSystemNotice
-      var tk = window.RocheToolkit || (window.parent && window.parent.RocheToolkit) || (window.top && window.top.RocheToolkit);
-      if (tk && typeof tk.simulateSystemNotice === "function") {
-        console.log("[DMS] using RocheToolkit.simulateSystemNotice");
-        try {
-          return Promise.resolve(tk.simulateSystemNotice(cid, text, "diary")).then(function (id) {
-            console.log("[DMS] simulateSystemNotice OK, id=", id);
-          }).catch(function (e) { console.error("[DMS] simulateSystemNotice fail", e); });
-        } catch (e) { console.error("[DMS] simulateSystemNotice throw", e); }
+      // 角色（TA）信息：从当前选中会话解析 senderId / senderName
+      var senderId = "";
+      var senderName = (ctx && ctx.charName) || "TA";
+      var conv = state.selectedConv;
+      if (conv) {
+        if (conv.contactId) senderId = conv.contactId;
+        else if (conv.memberProfiles && conv.memberProfiles.length) {
+          var mp = conv.memberProfiles[0];
+          senderId = mp.id || mp.contactId || "";
+          if (!senderName || senderName === "TA") senderName = mp.handle || mp.name || senderName;
+        }
       }
 
-      // 回退：直接操作 IndexedDB（与 RocheToolkit 相同的逻辑）
+      // 优先用 RocheToolkit.simulateCharMessage（角色消息，type:'text'，可正常渲染）
+      var tk = window.RocheToolkit || (window.parent && window.parent.RocheToolkit) || (window.top && window.top.RocheToolkit);
+      if (tk && (typeof tk.simulateCharMessage === "function" || typeof tk.simulateOfflineCharMessage === "function")) {
+        try {
+          var fn = (typeof tk.simulateOfflineCharMessage === "function" && cid && String(cid).indexOf("_offline") >= 0)
+            ? tk.simulateOfflineCharMessage : tk.simulateCharMessage;
+          return Promise.resolve(fn.call(tk, cid, text, senderName, senderId)).then(function (id) {
+            console.log("[DMS] simulateCharMessage OK, id=", id);
+          }).catch(function (e) {
+            console.error("[DMS] simulateCharMessage fail", e);
+            return injectCharMessageToIndexedDB(cid, text, senderName, senderId);
+          });
+        } catch (e) { console.error("[DMS] simulateCharMessage throw", e); }
+      }
+
+      // 回退：直接操作 IndexedDB（与 simulateCharMessage 相同的角色消息格式）
       console.log("[DMS] RocheToolkit not found, direct IndexedDB inject");
-      return injectMessageToIndexedDB(cid, text).then(function (id) {
+      return injectCharMessageToIndexedDB(cid, text, senderName, senderId).then(function (id) {
         console.log("[DMS] IndexedDB inject OK, id=", id);
       }).catch(function (e) {
         console.error("[DMS] IndexedDB inject fail", e);
@@ -5163,8 +5180,8 @@
       });
     }
 
-    /* ---------- 直接操作 IndexedDB 注入系统消息 ---------- */
-    function injectMessageToIndexedDB(conversationId, text) {
+    /* ---------- 直接操作 IndexedDB 注入角色（TA）消息 ---------- */
+    function injectCharMessageToIndexedDB(conversationId, text, senderName, senderId) {
       return new Promise(function (resolve, reject) {
         var req = indexedDB.open("Roche_db");
         req.onsuccess = function () {
@@ -5177,11 +5194,11 @@
               id: now + Math.floor(Math.random() * 1000),
               isMe: false,
               text: text,
-              type: "system_notice",
+              type: "text",
               timestamp: now,
               conversationId: conversationId,
-              senderId: "__system__",
-              senderName: "System"
+              senderId: senderId || "",
+              senderName: senderName || "TA"
             };
             var addReq = store.add(msg);
             addReq.onsuccess = function () { resolve(addReq.result); };
@@ -5415,7 +5432,7 @@
   window.RochePlugin.register({
     id: "daily-memory-summary",
     name: "\u624b\u8d26\u65e5\u8bb0",
-    version: "2.7.11",
+    version: "2.7.12",
     apps: [
       {
         id: "daily-memory-summary-home",

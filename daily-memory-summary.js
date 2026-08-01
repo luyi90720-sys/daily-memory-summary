@@ -5113,6 +5113,11 @@
       }
       return a.comment || "";
     }
+    // 批注是否有实质内容：空便签/空批注不注入，避免出现【user 的便签：】这类空行
+    function hasAnnotContent(a) {
+      if (a.type === "sticky") return !!(a.comment && a.comment.trim());
+      return !!(a.selectedText && a.selectedText.trim()) || !!(a.comment && a.comment.trim());
+    }
 
     /* ---------- 拼装短期记忆注入文本（按段落联动便签/贴纸） ---------- */
     function buildShortTermInjectText(diary) {
@@ -5131,7 +5136,7 @@
         parts.push("\u3010" + charName + " \u7ed9 " + userName + " \u7684\u65e5\u8bb0\u3011");
         var charBlocks = parseBlocks(diary.charDiary);
         var userAnnotsOnChar = (diary.annotations || []).filter(function (a) {
-          return a.type === "sticky" || a.selectedText;
+          return (a.type === "sticky" || a.selectedText) && hasAnnotContent(a);
         });
         var charStickers = diary.stickers || [];
         charBlocks.forEach(function (blk) {
@@ -5181,7 +5186,7 @@
         parts.push("\u3010" + userName + " \u7ed9 " + charName + " \u7684\u65e5\u8bb0\u3011");
         var userBlocks = parseBlocks(diary.userDiary);
         var charAnnotsOnUser = (diary.charAnnotations || []).filter(function (a) {
-          return a.type === "sticky" || a.selectedText;
+          return (a.type === "sticky" || a.selectedText) && hasAnnotContent(a);
         });
         var charStickersOnUser = diary.charStickers || [];
         userBlocks.forEach(function (blk) {
